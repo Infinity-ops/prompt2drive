@@ -75,9 +75,14 @@ class PromptToDrivePipeline:
         runner: Optional[CarlaRunner] = None,
         max_iterations: int = MAX_ITERATIONS,
         output_root: str = "outputs",
+        backend: Optional[str] = None,
     ):
-        self.generator = generator or Generator()
-        self.verifier = verifier or Verifier()
+        # `backend` is a convenience: if set (e.g. "openai" / "huggingface")
+        # and no explicit generator/verifier were passed, both agents are
+        # constructed against that backend. Pass generator/verifier directly
+        # if you want the two agents on *different* backends.
+        self.generator = generator or Generator(backend=backend)
+        self.verifier = verifier or Verifier(backend=backend)
         self.runner = runner or CarlaRunner()
         self.max_iterations = max_iterations
         self.output_root = Path(output_root)

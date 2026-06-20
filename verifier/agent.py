@@ -5,7 +5,9 @@ Agent 2 — Verifier.
 
 Implements hybrid semantic verification of a completed simulation run
 against the original natural-language intent, combining:
-  (a) a VLM channel that visually inspects rendered frames, and
+  (a) a vision-language channel (pluggable: OpenAI GPT-4o or a Hugging
+      Face VLM such as Qwen2-VL) that visually inspects rendered frames,
+      and
   (b) a deterministic log channel that checks the CARLA state log.
 
 See Section 3.3 of the paper for the full design rationale. The hybrid
@@ -14,17 +16,17 @@ trigger another generation iteration.
 """
 from __future__ import annotations
 
-import base64
 import hashlib
 import json
 import logging
+import os
 import shelve
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
-from openai import OpenAI
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
+from backends.llm_backend import VisionBackend, get_backend
 from engine.scenario_spec import ScenarioSpec
 
 logger = logging.getLogger("prompt_to_drive.verifier")
@@ -32,7 +34,7 @@ logger = logging.getLogger("prompt_to_drive.verifier")
 CACHE_PATH = Path(".cache/verifier_cache")
 CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-DEFAULT_THRESHOLD = 0.72
+DEFAULT_THRESHOLD = float(os.getenv("P2D_VERIFICATION_THRESHOLD", "0.72"))
 SCORE_WEIGHTS = dict(vlm=0.5, log=0.3, exec=0.2)
 
 
@@ -55,6 +57,7 @@ class HybridVerificationResult(BaseModel):
     execution_success: bool
     final_score: float
     overall_pass: bool
+    backend_name: str = "unknown"
 
 
 VERIFY_PROMPT_TEMPLATE = """You are a simulation verification expert for autonomous driving.
@@ -82,10 +85,19 @@ fields, no markdown fences, no explanation outside the JSON:
 
 
 class Verifier:
-    def __init__(self, model: str = "gpt-4o", client: Optional[OpenAI] = None,
-                 threshold: float = DEFAULT_THRESHOLD):
-        self.model = model
-        self.client = client or OpenAI()
+    """
+    backend: a VisionBackend instance, or a string ("openai" / "huggingface").
+    Defaults to the P2D_VISION_BACKEND environment variable, or "openai".
+    """
+
+    def __init__(
+        self,
+        backend: Optional[Union[VisionBackend, str]] = None,
+        threshold: float = DEFAULT_THRESHOLD,
+    ):
+        if backend is None:
+            backend = os.getenv("P2D_VISION_BACKEND", "openai")
+        self.backend: VisionBackend = get_backend(backend) if isinstance(backend, str) else backend
         self.threshold = threshold
 
     # ------------------------------------------------------------------ #
@@ -98,16 +110,15 @@ class Verifier:
         exec_success: bool,
     ) -> HybridVerificationResult:
         cache_key = hashlib.md5(
-            (original_prompt + str(spec.model_dump()) + str(frame_paths)).encode()
+            (self.backend.name + "||" + original_prompt + "||" + str(spec.model_dump()) + "||" + str(frame_paths)).encode()
         ).hexdigest()
 
         with shelve.open(str(CACHE_PATH)) as cache:
             if cache_key in cache:
-                logger.debug("Verifier cache hit for %s", cache_key[:8])
+                logger.debug("Verifier cache hit for %s [%s]", cache_key[:8], self.backend.name)
                 return HybridVerificationResult(**cache[cache_key])
 
             if not exec_success or not frame_paths:
-                # No point asking the VLM to inspect a failed run.
                 vlm_result = VerificationResult(
                     weather_correct=False,
                     pedestrian_present=False,
@@ -139,6 +150,7 @@ class Verifier:
                 execution_success=exec_success,
                 final_score=final_score,
                 overall_pass=final_score >= self.threshold,
+                backend_name=self.backend.name,
             )
 
             cache[cache_key] = result.model_dump()
@@ -147,52 +159,30 @@ class Verifier:
     # ------------------------------------------------------------------ #
     def _call_vlm(self, prompt: str, spec: ScenarioSpec, frame_paths: list[str]) -> VerificationResult:
         selected = self._select_frames(frame_paths)
-
-        content = [
-            {
-                "type": "text",
-                "text": VERIFY_PROMPT_TEMPLATE.format(
-                    prompt=prompt,
-                    spec_json=json.dumps(spec.model_dump(), indent=2),
-                    weather=spec.weather,
-                    event=spec.event_type,
-                ),
-            }
-        ]
-        content.extend(self._encode_frame(f) for f in selected if Path(f).exists())
-
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=[{"role": "user", "content": content}],
-            max_tokens=600,
-            temperature=0.0,  # deterministic verification
+        prompt_text = VERIFY_PROMPT_TEMPLATE.format(
+            prompt=prompt,
+            spec_json=json.dumps(spec.model_dump(), indent=2),
+            weather=spec.weather,
+            event=spec.event_type,
         )
 
-        raw = response.choices[0].message.content.strip()
-        raw = raw.replace("```json", "").replace("```", "").strip()
         try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
-            logger.error("Verifier JSON parse failure, raw output: %s", raw[:500])
-            data = dict(
+            data = self.backend.verify_frames(prompt_text, [f for f in selected if Path(f).exists()])
+            return VerificationResult(**data)
+        except (ValidationError, json.JSONDecodeError, ValueError) as exc:
+            logger.error("Verifier (%s) failed to produce valid output: %s", self.backend.name, exc)
+            return VerificationResult(
                 weather_correct=False, pedestrian_present=False, vehicles_present=False,
                 event_observable=False, intent_alignment_score=0.0,
                 missing_elements=["verifier_parse_error"], excess_elements=[],
-                confidence=0.0, notes="VLM response could not be parsed as JSON.",
+                confidence=0.0, notes=f"Backend '{self.backend.name}' response could not be parsed: {exc}",
             )
-        return VerificationResult(**data)
 
     @staticmethod
     def _select_frames(frame_paths: list[str]) -> list[str]:
         if len(frame_paths) <= 3:
             return frame_paths
         return [frame_paths[0], frame_paths[len(frame_paths) // 2], frame_paths[-1]]
-
-    @staticmethod
-    def _encode_frame(frame_path: str) -> dict:
-        with open(frame_path, "rb") as f:
-            b64 = base64.b64encode(f.read()).decode("utf-8")
-        return {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}", "detail": "high"}}
 
     @staticmethod
     def _validate_log(log_path: str, spec: ScenarioSpec) -> tuple[int, int]:

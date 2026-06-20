@@ -4,27 +4,26 @@ generator/agent.py
 Agent 1 — Generator.
 
 Translates a natural-language driving scenario description into a
-validated ScenarioSpec using an LLM with structured output. Supports an
-optional refinement_context produced by the Reflector agent on retry
-iterations.
+validated ScenarioSpec using a pluggable text backend (OpenAI or
+Hugging Face -- see backends/llm_backend.py). Supports an optional
+refinement_context produced by the Reflector agent on retry iterations.
 
-Design principle: the LLM never writes code or touches the simulator. It
-only ever fills in a fixed, typed schema (ScenarioSpec). This is the
-generation-side half of the hallucination-mitigation strategy described
-in the paper; the engine-side half is the deterministic CarlaRunner.
+Design principle: the backend never writes code or touches the
+simulator. It only ever fills in a fixed, typed schema (ScenarioSpec).
+This is the generation-side half of the hallucination-mitigation
+strategy described in the paper; the engine-side half is the
+deterministic CarlaRunner.
 """
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
+import os
 import shelve
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
-from openai import OpenAI
-from pydantic import ValidationError
-
+from backends.llm_backend import TextBackend, get_backend
 from engine.scenario_spec import ScenarioSpec
 
 logger = logging.getLogger("prompt_to_drive.generator")
@@ -72,70 +71,56 @@ If a refinement context is provided (from a previous failed verification),
 apply the required corrections precisely while preserving fields that were
 already verified as correct. Return ONLY the JSON object, no prose."""
 
+BASELINE_SYSTEM_PROMPT = (
+    "You are an expert CARLA Python API developer. Write a complete, runnable "
+    "Python script using the carla module that implements the scenario described "
+    "by the user. Assume `carla`, `client`, and `world` are already available. "
+    "Return ONLY Python code."
+)
+
 
 class Generator:
-    def __init__(self, model: str = "gpt-4o-2024-08-06", client: Optional[OpenAI] = None):
-        self.model = model
-        self.client = client or OpenAI()
+    """
+    backend: a TextBackend instance, or a string ("openai" / "huggingface")
+    which will be resolved via backends.llm_backend.get_backend(). Defaults
+    to the P2D_TEXT_BACKEND environment variable, or "openai" if unset.
+    """
+
+    def __init__(self, backend: Optional[Union[TextBackend, str]] = None):
+        if backend is None:
+            backend = os.getenv("P2D_TEXT_BACKEND", "openai")
+        self.backend: TextBackend = get_backend(backend) if isinstance(backend, str) else backend
 
     def generate(self, prompt: str, refinement_context: str = "") -> ScenarioSpec:
         """
         Convert a natural language prompt (+ optional refinement context)
-        into a validated ScenarioSpec. Results are cached by the combined
-        input hash so repeated runs never re-spend API budget.
+        into a validated ScenarioSpec. Results are cached by backend name +
+        input hash so repeated runs never re-spend API/inference budget,
+        and so the same prompt run under two backends is cached separately.
         """
-        cache_key = hashlib.md5((prompt + "||" + refinement_context).encode()).hexdigest()
+        cache_key = hashlib.md5(
+            (self.backend.name + "||" + prompt + "||" + refinement_context).encode()
+        ).hexdigest()
 
         with shelve.open(str(CACHE_PATH)) as cache:
             if cache_key in cache:
-                logger.debug("Generator cache hit for %s", cache_key[:8])
+                logger.debug("Generator cache hit for %s [%s]", cache_key[:8], self.backend.name)
                 return ScenarioSpec(**cache[cache_key])
 
             user_content = prompt if not refinement_context else f"{prompt}\n\n{refinement_context}"
-
-            response = self.client.beta.chat.completions.parse(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": user_content},
-                ],
-                response_format=ScenarioSpec,
-                temperature=0.2,
-            )
-
-            parsed = response.choices[0].message.parsed
-            if parsed is None:
-                raise ValidationError.from_exception_data(
-                    "ScenarioSpec", [{"type": "missing", "loc": (), "input": None}]
-                )
+            parsed = self.backend.generate_structured(SYSTEM_PROMPT, user_content, ScenarioSpec)
 
             cache[cache_key] = parsed.model_dump()
             return parsed
 
 
-def generate_baseline_code(prompt: str, client: Optional[OpenAI] = None,
-                            model: str = "gpt-4o-2024-08-06") -> str:
+def generate_baseline_code(prompt: str, backend: Optional[Union[TextBackend, str]] = None) -> str:
     """
-    Baseline comparator used in Experiment 1: direct, free-form LLM code
-    generation with NO schema constraint. This is intentionally the "naive"
-    approach the paper compares against -- do not improve its prompt beyond
-    what a typical practitioner would write in a first attempt.
+    Baseline comparator used in Experiment 1: direct, free-form generation
+    with NO schema constraint, run under whichever backend is passed in.
+    This is intentionally the "naive" approach the paper compares against.
     """
-    client = client or OpenAI()
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "You are an expert CARLA Python API developer. Write a complete, "
-                    "runnable Python script using the carla module that implements the "
-                    "scenario described by the user. Assume `carla`, `client`, and `world` "
-                    "are already available. Return ONLY Python code."
-                ),
-            },
-            {"role": "user", "content": prompt},
-        ],
-        temperature=0.4,
-    )
-    return response.choices[0].message.content
+    if backend is None:
+        backend = os.getenv("P2D_TEXT_BACKEND", "openai")
+    backend_obj = get_backend(backend) if isinstance(backend, str) else backend
+    return backend_obj.generate_text(BASELINE_SYSTEM_PROMPT, prompt)

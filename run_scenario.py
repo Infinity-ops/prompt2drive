@@ -38,20 +38,32 @@ def main():
     parser.add_argument("--carla-port", type=int, default=2000)
     parser.add_argument("--max-iterations", type=int, default=3)
     parser.add_argument("--out", default="outputs")
+    parser.add_argument(
+        "--backend", choices=["openai", "huggingface"], default=None,
+        help="LLM/VLM backend. Defaults to P2D_TEXT_BACKEND / P2D_VISION_BACKEND "
+             "env vars, or 'openai' if unset.",
+    )
     args = parser.parse_args()
 
-    if not os.getenv("OPENAI_API_KEY"):
+    backend_needed = args.backend or os.getenv("P2D_TEXT_BACKEND", "openai")
+    if backend_needed == "openai" and not os.getenv("OPENAI_API_KEY"):
         raise SystemExit(
             "OPENAI_API_KEY is not set. Create a .env file (see .env.example) "
+            "or export it in your shell before running, or pass --backend huggingface."
+        )
+    if backend_needed == "huggingface" and not os.getenv("HUGGINGFACE_API_TOKEN"):
+        raise SystemExit(
+            "HUGGINGFACE_API_TOKEN is not set. Create a .env file (see .env.example) "
             "or export it in your shell before running."
         )
 
     runner = CarlaRunner(host=args.carla_host, port=args.carla_port)
     pipeline = PromptToDrivePipeline(
-        runner=runner, max_iterations=args.max_iterations, output_root=args.out
+        runner=runner, max_iterations=args.max_iterations, output_root=args.out,
+        backend=args.backend,
     )
 
-    print(f"\nRunning scenario '{args.scenario_id}' in mode='{args.mode}'")
+    print(f"\nRunning scenario '{args.scenario_id}' in mode='{args.mode}', backend='{backend_needed}'")
     print(f"Prompt: {args.prompt}\n")
 
     run = pipeline.run(prompt=args.prompt, scenario_id=args.scenario_id, mode=args.mode)

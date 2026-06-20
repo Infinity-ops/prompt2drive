@@ -1,8 +1,14 @@
 pydantic>=2.5
-openai>=1.40
 python-dotenv>=1.0
 matplotlib>=3.8
 pytest>=8.0
+
+# Backend SDKs -- you only strictly need ONE of these, matching whichever
+# backend(s) you configure via P2D_TEXT_BACKEND / P2D_VISION_BACKEND.
+# Both are listed so the side-by-side backend comparison (eval/run_backend_comparison.py)
+# works out of the box.
+openai>=1.40
+huggingface_hub>=0.24
 
 # Note: the `carla` package is NOT listed here. Install the Python egg/wheel
 # that ships with your local CARLA installation (matching its version), e.g.:

@@ -15,6 +15,7 @@ from pydantic import ValidationError
 from engine.scenario_spec import ScenarioSpec
 from reflector.agent import _lookup_correction, reflect
 from verifier.agent import HybridVerificationResult, VerificationResult
+from backends.llm_backend import get_backend, _parse_json_block
 
 
 # --------------------------------------------------------------------- #
@@ -109,3 +110,31 @@ def test_overall_pass_threshold():
     )
     assert result.overall_pass is True
     assert result.final_score >= 0.72
+
+
+# --------------------------------------------------------------------- #
+# Backend abstraction (no network calls)
+# --------------------------------------------------------------------- #
+def test_get_backend_unknown_raises():
+    with pytest.raises(ValueError):
+        get_backend("not-a-real-backend")
+
+
+def test_get_backend_openai_resolves(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "dummy-test-key")
+    backend = get_backend("openai")
+    assert backend.name == "openai"
+
+
+def test_parse_json_block_strips_fences():
+    raw = '```json\n{"a": 1, "b": "x"}\n```'
+    parsed = _parse_json_block(raw)
+    assert parsed == {"a": 1, "b": "x"}
+
+
+def test_parse_json_block_extracts_from_stray_prose():
+    # Open-weight models are more prone to wrapping JSON in prose than
+    # OpenAI's structured outputs -- this is the repair path for that.
+    raw = 'Sure, here is the result:\n{"a": 1, "b": 2}\nHope that helps!'
+    parsed = _parse_json_block(raw)
+    assert parsed == {"a": 1, "b": 2}

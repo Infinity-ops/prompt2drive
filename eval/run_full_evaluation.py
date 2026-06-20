@@ -37,6 +37,11 @@ def main():
     parser.add_argument("--max-iterations", type=int, default=3)
     parser.add_argument("--carla-host", default="localhost")
     parser.add_argument("--carla-port", type=int, default=2000)
+    parser.add_argument(
+        "--backend", choices=["openai", "huggingface"], default=None,
+        help="LLM/VLM backend for both Generator and Verifier. Defaults to "
+             "P2D_TEXT_BACKEND / P2D_VISION_BACKEND env vars, or 'openai'.",
+    )
     args = parser.parse_args()
 
     dataset = json.loads(Path(args.dataset).read_text())
@@ -48,6 +53,7 @@ def main():
         runner=runner,
         max_iterations=args.max_iterations,
         output_root=args.out,
+        backend=args.backend,
     )
 
     all_runs = []
