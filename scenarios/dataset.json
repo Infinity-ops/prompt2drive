@@ -1,0 +1,166 @@
+{
+  "dataset_version": "1.0",
+  "description": "20-scenario evaluation set for Prompt-to-Drive. Covers 5 weather types x 6 event types x 3 difficulty levels. Ground truth labels were established by two independent human raters inspecting rendered simulation frames (see paper Section 4.1).",
+  "scenarios": [
+    {
+      "id": "s01",
+      "prompt": "A pedestrian suddenly crosses near a traffic signal in rainy weather.",
+      "difficulty": "easy",
+      "expected_weather": "rain",
+      "expected_actors": ["pedestrian"],
+      "expected_event": "crossing"
+    },
+    {
+      "id": "s02",
+      "prompt": "Sudden lane change to avoid a parked vehicle on a sunny highway.",
+      "difficulty": "easy",
+      "expected_weather": "clear",
+      "expected_actors": ["vehicle"],
+      "expected_event": "lane_change"
+    },
+    {
+      "id": "s03",
+      "prompt": "A cyclist runs a red light in foggy conditions at a busy junction.",
+      "difficulty": "medium",
+      "expected_weather": "fog",
+      "expected_actors": ["cyclist"],
+      "expected_event": "red_light_violation"
+    },
+    {
+      "id": "s04",
+      "prompt": "Emergency braking required when a vehicle ahead stops abruptly at night.",
+      "difficulty": "medium",
+      "expected_weather": "night",
+      "expected_actors": ["vehicle"],
+      "expected_event": "emergency_brake"
+    },
+    {
+      "id": "s05",
+      "prompt": "A parked vehicle obstructs the lane on a cloudy day, forcing a detour.",
+      "difficulty": "easy",
+      "expected_weather": "cloudy",
+      "expected_actors": ["vehicle"],
+      "expected_event": "obstruction"
+    },
+    {
+      "id": "s06",
+      "prompt": "Overtaking a slow-moving truck on a clear rural road.",
+      "difficulty": "easy",
+      "expected_weather": "clear",
+      "expected_actors": ["vehicle"],
+      "expected_event": "overtaking"
+    },
+    {
+      "id": "s07",
+      "prompt": "A pedestrian crosses at an unmarked junction during heavy rain at night.",
+      "difficulty": "hard",
+      "expected_weather": "rain",
+      "expected_actors": ["pedestrian"],
+      "expected_event": "crossing"
+    },
+    {
+      "id": "s08",
+      "prompt": "A cyclist swerves into traffic suddenly in dense fog with low visibility.",
+      "difficulty": "hard",
+      "expected_weather": "fog",
+      "expected_actors": ["cyclist"],
+      "expected_event": "lane_change"
+    },
+    {
+      "id": "s09",
+      "prompt": "Emergency brake test in rainy conditions with heavy traffic density.",
+      "difficulty": "medium",
+      "expected_weather": "rain",
+      "expected_actors": ["vehicle"],
+      "expected_event": "emergency_brake"
+    },
+    {
+      "id": "s10",
+      "prompt": "A vehicle runs a red light at a signalized intersection in clear daylight.",
+      "difficulty": "easy",
+      "expected_weather": "clear",
+      "expected_actors": ["vehicle"],
+      "expected_event": "red_light_violation"
+    },
+    {
+      "id": "s11",
+      "prompt": "Pedestrian crossing near a school zone junction on a cloudy afternoon.",
+      "difficulty": "medium",
+      "expected_weather": "cloudy",
+      "expected_actors": ["pedestrian"],
+      "expected_event": "crossing"
+    },
+    {
+      "id": "s12",
+      "prompt": "A delivery vehicle obstructs a lane at night, requiring nearby traffic to merge.",
+      "difficulty": "medium",
+      "expected_weather": "night",
+      "expected_actors": ["vehicle"],
+      "expected_event": "obstruction"
+    },
+    {
+      "id": "s13",
+      "prompt": "Overtaking maneuver on a foggy two-lane road with oncoming traffic risk.",
+      "difficulty": "hard",
+      "expected_weather": "fog",
+      "expected_actors": ["vehicle"],
+      "expected_event": "overtaking"
+    },
+    {
+      "id": "s14",
+      "prompt": "A cyclist crosses an intersection just as the light changes, in clear weather.",
+      "difficulty": "easy",
+      "expected_weather": "clear",
+      "expected_actors": ["cyclist"],
+      "expected_event": "crossing"
+    },
+    {
+      "id": "s15",
+      "prompt": "Sudden lane change due to debris on a rainy highway at night.",
+      "difficulty": "hard",
+      "expected_weather": "rain",
+      "expected_actors": ["vehicle"],
+      "expected_event": "lane_change"
+    },
+    {
+      "id": "s16",
+      "prompt": "A pedestrian darts between parked cars into the road in clear daylight.",
+      "difficulty": "medium",
+      "expected_weather": "clear",
+      "expected_actors": ["pedestrian"],
+      "expected_event": "crossing"
+    },
+    {
+      "id": "s17",
+      "prompt": "Emergency braking when a cyclist swerves in front of the ego vehicle, foggy morning.",
+      "difficulty": "hard",
+      "expected_weather": "fog",
+      "expected_actors": ["cyclist"],
+      "expected_event": "emergency_brake"
+    },
+    {
+      "id": "s18",
+      "prompt": "A vehicle blocks an intersection after running a red light on a cloudy day.",
+      "difficulty": "medium",
+      "expected_weather": "cloudy",
+      "expected_actors": ["vehicle"],
+      "expected_event": "red_light_violation"
+    },
+    {
+      "id": "s19",
+      "prompt": "Overtaking a cyclist on a narrow road at night with oncoming headlights.",
+      "difficulty": "hard",
+      "expected_weather": "night",
+      "expected_actors": ["cyclist", "vehicle"],
+      "expected_event": "overtaking"
+    },
+    {
+      "id": "s20",
+      "prompt": "A stalled vehicle obstructs a junction approach during light rain.",
+      "difficulty": "easy",
+      "expected_weather": "rain",
+      "expected_actors": ["vehicle"],
+      "expected_event": "obstruction"
+    }
+  ]
+}
