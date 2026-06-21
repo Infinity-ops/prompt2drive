@@ -7,7 +7,7 @@ Prompt-to-Drive converts natural-language driving scenario descriptions into exe
 This repository (`prompt2drive`) is the reference implementation accompanying the paper:
 
 > **Prompt-to-Drive: Closed-Loop AI-Driven Scenario Synthesis and Semantic Verification for Trustworthy Autonomous Driving Simulation**
-> Submitted to CAIESA — ESWEEK Workshop on Challenges in AI-Based Embedded Systems Applications, Barcelona, 2026.
+
 
 ```
 ┌─────────────────┐     ┌───────────┐     ┌─────────────┐     ┌──────────────────┐
