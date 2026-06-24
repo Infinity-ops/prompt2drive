@@ -71,12 +71,31 @@ If a refinement context is provided (from a previous failed verification),
 apply the required corrections precisely while preserving fields that were
 already verified as correct. Return ONLY the JSON object, no prose."""
 
-BASELINE_SYSTEM_PROMPT = (
-    "You are an expert CARLA Python API developer. Write a complete, runnable "
-    "Python script using the carla module that implements the scenario described "
-    "by the user. Assume `carla`, `client`, and `world` are already available. "
-    "Return ONLY Python code."
-)
+BASELINE_SYSTEM_PROMPT = """You are a CARLA simulation expert. Generate SAFE, WORKING Python code for \
+CARLA scenarios directly from the user's natural language description.
+
+CRITICAL SAFETY RULES:
+1. ALWAYS use world.try_spawn_actor() instead of world.spawn_actor()
+2. ALWAYS check if actor is not None before using it
+3. LIMIT actors: maximum 3 vehicles, maximum 2 pedestrians
+4. Do NOT include client connection, world retrieval, time.sleep, or destroy calls
+5. Do NOT include if __name__ == '__main__' blocks
+6. ALWAYS add spawned actors to actor_list for cleanup
+7. The camera will automatically follow the first spawned vehicle; ensure at least
+   one vehicle is spawned for a dynamic view.
+8. Autopilot should ONLY be enabled if the user explicitly requests the vehicle to
+   "drive", "move", "follow a path", or if it's part of a "traffic" scenario.
+
+AVAILABLE VARIABLES: client, world, actor_list (list to append spawned actors to).
+
+Return ONLY Python code, no markdown fences, no explanation.
+
+Note: this is intentionally a free-form, unconstrained generation baseline (the
+naive comparator in Experiment 1) -- it has no semantic verification of its own
+output, no schema validation, and no closed-loop refinement. Its prompt
+engineering is adapted from an earlier, hand-tuned practitioner prototype, since
+a weak, unrealistic strawman baseline would be a less defensible comparator than
+one reflecting genuine prior effort to make free-form generation work well."""
 
 
 class Generator:
@@ -111,7 +130,25 @@ class Generator:
             parsed = self.backend.generate_structured(SYSTEM_PROMPT, user_content, ScenarioSpec)
 
             cache[cache_key] = parsed.model_dump()
-            return parsed
+            return self._clamp_for_hardware(parsed)
+
+    @staticmethod
+    def _clamp_for_hardware(spec: ScenarioSpec) -> ScenarioSpec:
+        """
+        Optional post-generation safety clamp for resource-constrained
+        hardware. Activated by setting P2D_LOWSPEC_MODE=1 -- restricts the
+        town to Town01/Town02 (smaller maps, less geometry to render) and
+        caps num_vehicles, so a weak GPU (e.g. 2GB VRAM mobile cards) is
+        less likely to stall or crash mid-run. This does NOT change what
+        the Generator *chose* semantically; it only bounds render load.
+        """
+        if os.getenv("P2D_LOWSPEC_MODE") != "1":
+            return spec
+        data = spec.model_dump()
+        if data["town"] not in {"Town01", "Town02"}:
+            data["town"] = "Town01"
+        data["num_vehicles"] = min(data["num_vehicles"], 8)
+        return ScenarioSpec(**data)
 
 
 def generate_baseline_code(prompt: str, backend: Optional[Union[TextBackend, str]] = None) -> str:

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import random
 import time
 import traceback
@@ -23,6 +24,7 @@ from pathlib import Path
 from typing import Optional
 
 from engine.scenario_spec import ScenarioSpec
+from engine.hardware_profiles import HardwareProfile, get_profile
 
 logger = logging.getLogger("prompt_to_drive.engine")
 
@@ -63,10 +65,12 @@ class CarlaRunner:
         result = runner.run(spec, scenario_id="s001", output_dir="outputs/s001")
     """
 
-    def __init__(self, host: str = "localhost", port: int = 2000, timeout: float = 10.0):
+    def __init__(self, host: str = "localhost", port: int = 2000, timeout: float = 10.0,
+                 hardware_profile: Optional[str] = None):
         self.host = host
         self.port = port
         self.timeout = timeout
+        self.profile: HardwareProfile = get_profile(hardware_profile)
         self._client = None
         self._world = None
 
@@ -83,9 +87,9 @@ class CarlaRunner:
 
         settings = self._world.get_settings()
         settings.synchronous_mode = True
-        settings.fixed_delta_seconds = 0.05  # 20 Hz simulation tick
+        settings.fixed_delta_seconds = self.profile.fixed_delta_seconds
         self._world.apply_settings(settings)
-        logger.info("Connected to CARLA at %s:%s", self.host, self.port)
+        logger.info("Connected to CARLA at %s:%s [hardware_profile=%s]", self.host, self.port, self.profile.name)
 
     def disconnect(self):
         if self._world is not None:
@@ -96,7 +100,25 @@ class CarlaRunner:
     # ------------------------------------------------------------------ #
     # Main entry point
     # ------------------------------------------------------------------ #
-    def run(self, spec: ScenarioSpec, scenario_id: str, output_dir: str) -> ExecutionResult:
+    def run(self, spec: ScenarioSpec, scenario_id: str, output_dir: str,
+            live_frame_callback: Optional[callable] = None,
+            rng_seed: Optional[int] = None) -> ExecutionResult:
+        """
+        live_frame_callback, if provided, is called with each captured
+        carla.Image at the same cadence frames are saved to disk (every
+        profile.capture_every_s seconds). Used by ui/app.py to stream a
+        live preview; has no effect on saved frames, scoring, or any
+        headless eval path -- it's purely an optional UI hook.
+
+        rng_seed, if provided, seeds Python's random module before NPC
+        spawn-point shuffling and pedestrian placement, making a given
+        (spec, rng_seed) pair's actor placement reproducible. This is
+        what eval/expand_dataset.py's seeded benchmark variants rely on
+        to produce genuinely different (but reproducible) executions of
+        the same ScenarioSpec, rather than re-running an identical layout.
+        """
+        if rng_seed is not None:
+            random.seed(rng_seed)
         import carla
 
         out = Path(output_dir)
@@ -106,6 +128,7 @@ class CarlaRunner:
         state_log: dict = {
             "scenario_id": scenario_id,
             "spec": spec.model_dump(),
+            "hardware_profile": self.profile.name,
             "weather_api_called": None,
             "pedestrian_spawned": False,
             "vehicle_count": 0,
@@ -128,7 +151,7 @@ class CarlaRunner:
                 self._world = self._client.load_world(spec.town)
                 settings = self._world.get_settings()
                 settings.synchronous_mode = True
-                settings.fixed_delta_seconds = 0.05
+                settings.fixed_delta_seconds = self.profile.fixed_delta_seconds
                 self._world.apply_settings(settings)
 
             # 2. Apply weather
@@ -148,8 +171,8 @@ class CarlaRunner:
             state_log["actors"].append({"type": "ego_vehicle", "id": ego_vehicle.id})
 
             camera_bp = blueprint_library.find("sensor.camera.rgb")
-            camera_bp.set_attribute("image_size_x", "960")
-            camera_bp.set_attribute("image_size_y", "540")
+            camera_bp.set_attribute("image_size_x", str(self.profile.camera_width))
+            camera_bp.set_attribute("image_size_y", str(self.profile.camera_height))
             camera_transform = carla.Transform(carla.Location(x=-5.5, z=2.8), carla.Rotation(pitch=-15))
             camera = self._world.spawn_actor(camera_bp, camera_transform, attach_to=ego_vehicle)
             actors_to_destroy.append(camera)
@@ -161,11 +184,19 @@ class CarlaRunner:
 
             camera.listen(_on_image)
 
-            # 4. Spawn NPC vehicles
+            # 4. Spawn NPC vehicles (capped by hardware profile, regardless of
+            #    what the spec requests -- this is what keeps a 2GB-VRAM GPU
+            #    like the Quadro M620 from stalling under too many rendered actors)
             vehicle_bps = blueprint_library.filter("vehicle.*")
             npc_spawn_points = [p for i, p in enumerate(spawn_points) if i != spec.spawn_point_index]
             random.shuffle(npc_spawn_points)
-            for i in range(min(spec.num_vehicles, len(npc_spawn_points))):
+            effective_num_vehicles = min(spec.num_vehicles, self.profile.max_vehicles)
+            if effective_num_vehicles < spec.num_vehicles:
+                logger.info(
+                    "Hardware profile '%s' caps num_vehicles at %d (spec requested %d)",
+                    self.profile.name, self.profile.max_vehicles, spec.num_vehicles,
+                )
+            for i in range(min(effective_num_vehicles, len(npc_spawn_points))):
                 bp = random.choice(vehicle_bps)
                 npc = self._world.try_spawn_actor(bp, npc_spawn_points[i])
                 if npc is not None:
@@ -193,9 +224,9 @@ class CarlaRunner:
                     controller.go_to_location(self._world.get_random_location_from_navigation())
                     controller.set_max_speed(1.4)
 
-            # 6. Tick the simulation, capturing frames every ~2s
-            ticks = int(spec.duration_s / 0.05)
-            capture_every = int(2.0 / 0.05)
+            # 6. Tick the simulation, capturing frames at the profile's interval
+            ticks = int(spec.duration_s / self.profile.fixed_delta_seconds)
+            capture_every = max(1, int(self.profile.capture_every_s / self.profile.fixed_delta_seconds))
             saved_frames = []
 
             for t in range(ticks):
@@ -209,6 +240,11 @@ class CarlaRunner:
                         fp = frames_dir / f"frame_{len(saved_frames):03d}.png"
                         img.save_to_disk(str(fp))
                         saved_frames.append(str(fp))
+                        if live_frame_callback is not None:
+                            try:
+                                live_frame_callback(img)
+                            except Exception as cb_exc:  # noqa: BLE001
+                                logger.warning("live_frame_callback raised: %s", cb_exc)
 
             state_log["execution_completed"] = True
             camera.stop()

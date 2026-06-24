@@ -14,3 +14,7 @@ huggingface_hub>=0.24
 # that ships with your local CARLA installation (matching its version), e.g.:
 #   pip install <CARLA_ROOT>/PythonAPI/carla/dist/carla-0.9.15-cp310-cp310-linux_x86_64.whl
 # See README.md "Prerequisites" for details.
+
+# UI (optional -- only needed if you run ui/app.py)
+pygame>=2.5
+numpy>=1.24

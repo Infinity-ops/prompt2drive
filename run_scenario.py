@@ -43,6 +43,13 @@ def main():
         help="LLM/VLM backend. Defaults to P2D_TEXT_BACKEND / P2D_VISION_BACKEND "
              "env vars, or 'openai' if unset.",
     )
+    parser.add_argument(
+        "--hardware-profile", default=None,
+        choices=["default", "low_vram_2gb", "headless_ci"],
+        help="Resolution/quality/actor-density profile. Use 'low_vram_2gb' for "
+             "2GB-VRAM mobile GPUs such as the Quadro M620. Defaults to "
+             "P2D_HARDWARE_PROFILE env var, or 'default'.",
+    )
     args = parser.parse_args()
 
     backend_needed = args.backend or os.getenv("P2D_TEXT_BACKEND", "openai")
@@ -57,7 +64,8 @@ def main():
             "or export it in your shell before running."
         )
 
-    runner = CarlaRunner(host=args.carla_host, port=args.carla_port)
+    runner = CarlaRunner(host=args.carla_host, port=args.carla_port,
+                          hardware_profile=args.hardware_profile)
     pipeline = PromptToDrivePipeline(
         runner=runner, max_iterations=args.max_iterations, output_root=args.out,
         backend=args.backend,
