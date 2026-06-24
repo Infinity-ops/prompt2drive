@@ -11,3 +11,4 @@ eval/results/*
 .DS_Store
 .venv/
 venv/
+.esweek_env/
