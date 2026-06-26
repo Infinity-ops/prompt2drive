@@ -8,9 +8,18 @@ Usage:
     python run_scenario.py --prompt "A pedestrian crosses near a junction in rain" \\
         --scenario-id demo01 --mode full
 
+    # Low VRAM systems (avoid crashes on small machines):
+    python run_scenario.py --prompt "A pedestrian crosses near a junction in rain" \\
+        --hardware-profile low_vram_2gb
+
 Requires:
     - A running CARLA server (see README "Prerequisites")
     - OPENAI_API_KEY set in your environment or .env file
+
+Hardware Profiles:
+    - high_performance: Unrestricted town selection (4GB+ VRAM)
+    - standard: Mid-range systems (2-4GB VRAM) 
+    - low_vram_2gb: Constrained systems - restricts to Town01/Town02 only
 """
 from __future__ import annotations
 
@@ -39,39 +48,50 @@ def main():
     parser.add_argument("--max-iterations", type=int, default=3)
     parser.add_argument("--out", default="outputs")
     parser.add_argument(
-        "--backend", choices=["openai", "huggingface"], default=None,
-        help="LLM/VLM backend. Defaults to P2D_TEXT_BACKEND / P2D_VISION_BACKEND "
-             "env vars, or 'openai' if unset.",
+        "--hardware-profile",
+        choices=["high_performance", "standard", "low_vram_2gb", "low_vram_2gb_signals"],
+        default=None,
+        help="Hardware constraints for town selection. "
+        "'low_vram_2gb' restricts to Town01/Town02 to avoid OOM.",
     )
     parser.add_argument(
-        "--hardware-profile", default=None,
-        choices=["default", "low_vram_2gb", "headless_ci"],
-        help="Resolution/quality/actor-density profile. Use 'low_vram_2gb' for "
-             "2GB-VRAM mobile GPUs such as the Quadro M620. Defaults to "
-             "P2D_HARDWARE_PROFILE env var, or 'default'.",
+        "--backend",
+        choices=["openai", "huggingface"],
+        default="openai",
+        help="LLM backend used for generation and verification.",
     )
     args = parser.parse_args()
 
-    backend_needed = args.backend or os.getenv("P2D_TEXT_BACKEND", "openai")
-    if backend_needed == "openai" and not os.getenv("OPENAI_API_KEY"):
+    if args.backend == "openai" and not os.getenv("OPENAI_API_KEY"):
         raise SystemExit(
-            "OPENAI_API_KEY is not set. Create a .env file (see .env.example) "
-            "or export it in your shell before running, or pass --backend huggingface."
-        )
-    if backend_needed == "huggingface" and not os.getenv("HUGGINGFACE_API_TOKEN"):
-        raise SystemExit(
-            "HUGGINGFACE_API_TOKEN is not set. Create a .env file (see .env.example) "
-            "or export it in your shell before running."
+            "OPENAI_API_KEY is not set. Create a .env file or export it before running."
         )
 
-    runner = CarlaRunner(host=args.carla_host, port=args.carla_port,
-                          hardware_profile=args.hardware_profile)
+    if args.backend == "huggingface" and not os.getenv("HF_TOKEN"):
+        raise SystemExit(
+            "HF_TOKEN is not set. Create a .env file or export it before running."
+        )
+
+    runner = CarlaRunner(
+        host=args.carla_host,
+        port=args.carla_port,
+        hardware_profile=args.hardware_profile,
+    )
     pipeline = PromptToDrivePipeline(
-        runner=runner, max_iterations=args.max_iterations, output_root=args.out,
+        runner=runner,
+        max_iterations=args.max_iterations,
+        output_root=args.out,
+        hardware_profile=args.hardware_profile,
         backend=args.backend,
     )
 
-    print(f"\nRunning scenario '{args.scenario_id}' in mode='{args.mode}', backend='{backend_needed}'")
+    profile_info = ""
+    if args.hardware_profile:
+        from engine.hardware_config import get_profile_info
+        info = get_profile_info(args.hardware_profile)
+        profile_info = f" [Hardware: {info['description']}]"
+
+    print(f"\nRunning scenario '{args.scenario_id}' in mode='{args.mode}'{profile_info}")
     print(f"Prompt: {args.prompt}\n")
 
     run = pipeline.run(prompt=args.prompt, scenario_id=args.scenario_id, mode=args.mode)

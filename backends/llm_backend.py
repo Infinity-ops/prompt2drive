@@ -133,6 +133,70 @@ def _encode_frame_openai(frame_path: str) -> dict:
     return {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}", "detail": "high"}}
 
 
+def _scenario_spec_hint() -> dict:
+    """
+    JSON-safe prompt schema for ScenarioSpec.
+
+    Do not call ScenarioSpec.model_json_schema() here: the project's
+    ScenarioSpec currently contains Literal typing metadata that is not
+    JSON serializable in this environment.
+    """
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": [
+            "weather",
+            "town",
+            "num_vehicles",
+            "pedestrian",
+            "cyclist",
+            "event_type",
+            "duration_s",
+            "spawn_point_index",
+            "notes",
+        ],
+        "properties": {
+            "weather": {
+                "type": "string",
+                "enum": ["clear", "rain", "fog", "night", "cloudy"],
+            },
+            "town": {
+                "type": "string",
+                "enum": ["Town01", "Town02", "Town03", "Town04", "Town05"],
+            },
+            "num_vehicles": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 20,
+            },
+            "pedestrian": {"type": "boolean"},
+            "cyclist": {"type": "boolean"},
+            "event_type": {
+                "type": "string",
+                "enum": [
+                    "crossing",
+                    "lane_change",
+                    "emergency_brake",
+                    "red_light_violation",
+                    "obstruction",
+                    "overtaking",
+                ],
+            },
+            "duration_s": {
+                "type": "integer",
+                "minimum": 8,
+                "maximum": 30,
+            },
+            "spawn_point_index": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 200,
+            },
+            "notes": {"type": "string"},
+        },
+    }
+
+
 # --------------------------------------------------------------------- #
 # Hugging Face backend
 # --------------------------------------------------------------------- #
@@ -151,9 +215,22 @@ class HFBackend(TextBackend, VisionBackend):
     HF_VISION_MODEL environment variables, so you can point this at any
     model your HF account has inference access to (including a private
     Inference Endpoint you deploy yourself).
+
+    Token priority (Bug 2 fix):
+      run_scenario.py checks HF_TOKEN (the standard HF CLI env var).
+      This class reads BOTH HF_TOKEN and the legacy HUGGINGFACE_API_TOKEN,
+      preferring HF_TOKEN so they stay consistent with no user friction.
     """
 
     name = "huggingface"
+
+    # Vision models known to work on the HF free/PRO inference router.
+    # If the configured model returns a 400 "not supported by any provider",
+    # we fall back through this list before giving up and returning zeros.
+    _VISION_FALLBACKS = [
+            "Qwen/Qwen2.5-VL-7B-Instruct",
+            "meta-llama/Llama-3.2-11B-Vision-Instruct",
+        ]
 
     def __init__(
         self,
@@ -163,29 +240,49 @@ class HFBackend(TextBackend, VisionBackend):
     ):
         from huggingface_hub import InferenceClient
 
-        self.text_model = text_model or os.getenv("HF_TEXT_MODEL", "meta-llama/Meta-Llama-3.1-8B-Instruct")
-        self.vision_model = vision_model or os.getenv("HF_VISION_MODEL", "Qwen/Qwen2-VL-7B-Instruct")
-        self.token = token or os.getenv("HUGGINGFACE_API_TOKEN")
+        self.text_model = text_model or os.getenv(
+            "HF_TEXT_MODEL", "meta-llama/Meta-Llama-3.1-8B-Instruct"
+        )
+        self.vision_model = vision_model or os.getenv(
+            "HF_VISION_MODEL", "Qwen/Qwen2-VL-7B-Instruct"
+        )
+
+        # Bug 2 fix: accept both HF_TOKEN (standard HF CLI var, also what
+        # run_scenario.py validates) and the legacy HUGGINGFACE_API_TOKEN.
+        self.token = (
+            token
+            or os.getenv("HF_TOKEN")
+            or os.getenv("HUGGINGFACE_API_TOKEN")
+        )
         if not self.token:
             raise ValueError(
-                "HUGGINGFACE_API_TOKEN is not set. Generate one at "
-                "https://huggingface.co/settings/tokens (a PRO account raises "
-                "your rate limits / unlocks more hosted endpoints, but a free "
-                "account's token works for many smaller models too)."
+                "No HuggingFace token found. Set HF_TOKEN in your .env file "
+                "(generate one at https://huggingface.co/settings/tokens). "
+                "A PRO account raises rate limits and unlocks more hosted "
+                "endpoints, but a free token works for many smaller models."
             )
-        self._text_client = InferenceClient(model=self.text_model, token=self.token)
-        self._vision_client = InferenceClient(model=self.vision_model, token=self.token)
+
+        # Bug 4 fix: do NOT pass model= to InferenceClient constructor.
+        # The HF router resolves the provider at call time based on the model
+        # field in each chat_completion() call. Binding the model to the
+        # client constructor bypasses the router's per-call model resolution
+        # and causes 400 "model not supported" errors even for valid models.
+        self._client = InferenceClient(token=self.token)
 
     def generate_structured(self, system_prompt: str, user_prompt: str, schema: Type[T]) -> T:
-        # Most open-weight chat models don't support OpenAI-style
-        # response_format, so we ask for JSON explicitly and parse/repair.
-        schema_hint = json.dumps(schema.model_json_schema(), indent=2)
+        if schema.__name__ == "ScenarioSpec":
+            schema_hint = json.dumps(_scenario_spec_hint(), indent=2)
+        else:
+            schema_hint = json.dumps(schema.model_json_schema(), indent=2)
+
         full_prompt = (
             f"{system_prompt}\n\nYou MUST respond with ONLY a single JSON object "
             f"matching this schema (no markdown fences, no prose before or after):\n"
             f"{schema_hint}\n\nUser request: {user_prompt}"
         )
-        raw = self._text_client.chat_completion(
+        # Bug 4 fix: model passed explicitly in the call, not the constructor.
+        raw = self._client.chat_completion(
+            model=self.text_model,
             messages=[{"role": "user", "content": full_prompt}],
             max_tokens=512,
             temperature=0.2,
@@ -195,7 +292,8 @@ class HFBackend(TextBackend, VisionBackend):
         return schema(**data)
 
     def generate_text(self, system_prompt: str, user_prompt: str) -> str:
-        raw = self._text_client.chat_completion(
+        raw = self._client.chat_completion(
+            model=self.text_model,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
@@ -206,18 +304,69 @@ class HFBackend(TextBackend, VisionBackend):
         return raw.choices[0].message.content
 
     def verify_frames(self, prompt_text: str, frame_paths: list[str]) -> dict:
-        # HF Inference VLM chat-completion with image content blocks
+        """
+        Call the vision model with the given frames.
+
+        Bug 3 fix: if the configured vision model returns a 400 "not supported
+        by any provider" error, we try each fallback model in order before
+        raising. This prevents a misconfigured HF_VISION_MODEL from collapsing
+        all predicate scores to False/0 and making the verifier useless.
+        If all models fail, we raise so the Verifier's _call_vlm() catches it
+        and returns the graceful all-False result with confidence=0, which
+        correctly feeds into the score as 0 VLM contribution rather than
+        silently scoring everything wrong.
+        """
         content = [{"type": "text", "text": prompt_text}]
         for fp in frame_paths:
             content.append({"type": "image_url", "image_url": {"url": _encode_frame_hf(fp)}})
 
-        raw = self._vision_client.chat_completion(
-            messages=[{"role": "user", "content": content}],
-            max_tokens=600,
-            temperature=0.0,
-        )
-        text = raw.choices[0].message.content
-        return _parse_json_block(text)
+        # Try the configured model first, then any fallbacks.
+        models_to_try = [self.vision_model] + [
+            m for m in self._VISION_FALLBACKS if m != self.vision_model
+        ]
+
+        last_exc = None
+        for model in models_to_try:
+            try:
+                raw = self._client.chat_completion(
+                    model=model,
+                    messages=[{"role": "user", "content": content}],
+                    max_tokens=600,
+                    temperature=0.0,
+                )
+                text = raw.choices[0].message.content
+                result = _parse_json_block(text)
+                # If we fell back to a different model, log a warning so it's
+                # visible without being a hard error.
+                if model != self.vision_model:
+                    logger.warning(
+                        "Vision model '%s' unavailable; fell back to '%s'. "
+                        "Set HF_VISION_MODEL to a model your account can access.",
+                        self.vision_model,
+                        model,
+                    )
+                return result
+            except Exception as exc:
+                last_exc = exc
+                err_str = str(exc)
+                if "not supported by any provider" in err_str or "400" in err_str:
+                    logger.warning(
+                        "Vision model '%s' not available on this account: %s",
+                        model,
+                        err_str[:120],
+                    )
+                    continue
+                # Non-provider error (network, parse, etc.) — don't retry
+                raise
+
+        # All models exhausted
+        raise ValueError(
+            f"No usable HF vision model found. Tried: {models_to_try}. "
+            f"Last error: {last_exc}. "
+            f"Check your HF account's enabled providers at "
+            f"https://huggingface.co/settings/inference-providers, or set "
+            f"HF_VISION_MODEL to a model you have access to."
+        ) from last_exc
 
 
 def _encode_frame_hf(frame_path: str) -> str:
@@ -241,7 +390,7 @@ def _parse_json_block(raw: str) -> dict:
         start, end = cleaned.find("{"), cleaned.rfind("}")
         if start != -1 and end != -1:
             try:
-                return json.loads(cleaned[start : end + 1])
+                return json.loads(cleaned[start: end + 1])
             except json.JSONDecodeError:
                 pass
         logger.error("Failed to parse JSON from backend output: %s", cleaned[:300])

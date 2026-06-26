@@ -12,3 +12,4 @@ eval/results/*
 .venv/
 venv/
 .esweek_env/
+crash_trace.log

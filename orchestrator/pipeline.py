@@ -16,28 +16,18 @@ import logging
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Optional
 
 from engine.carla_runner import CarlaRunner, ExecutionResult
 from engine.scenario_spec import ScenarioSpec
 from generator.agent import Generator
 from reflector.agent import reflect
 from verifier.agent import HybridVerificationResult, Verifier
+from backends.llm_backend import get_backend
 
 logger = logging.getLogger("prompt_to_drive.orchestrator")
 
 MAX_ITERATIONS = 3
-
-# Called as status_callback(stage, payload) at each pipeline step, where
-# stage in {"generator", "engine", "verifier", "reflector", "done"} and
-# payload is a small dict of stage-specific info. Used by ui/app.py to
-# drive the live agent-progress panel; entirely optional for headless
-# eval runs (defaults to a no-op).
-StatusCallback = Callable[[str, dict], None]
-
-
-def _noop_callback(stage: str, payload: dict) -> None:
-    pass
 
 
 @dataclass
@@ -46,11 +36,9 @@ class IterationRecord:
     spec: dict
     refinement_context: Optional[str]
     execution_success: bool
-    verification_score: float          # hybrid score (predicate_agreement + log + exec channels)
-    predicate_agreement: float          # formal, auditable semantic score (PRIMARY metric -- see docs/SEMANTIC_VERIFICATION_METRIC.md)
-    predicate_agreement_std: float      # uncertainty across the verifier's repeated VLM samples
+    verification_score: float
     verification_passed: bool
-    missing_elements: list[str]         # failed predicate names (formal, not free-text)
+    missing_elements: list[str]
 
 
 @dataclass
@@ -76,9 +64,9 @@ class PromptToDrivePipeline:
     """
     The main closed-loop entry point.
 
-    mode="full"            -> Generator -> Engine -> Verifier -> Reflector loop (full system)
-    mode="generator_only"   -> Generator -> Engine -> Verifier, NO reflection retries
-    mode="baseline"          -> handled separately via eval/run_baseline.py (free-form code gen)
+    mode="full"            -> Generator -> Engine -> Verifier -> Reflector loop
+    mode="generator_only"  -> Generator -> Engine -> Verifier, NO reflection retries
+    mode="baseline"        -> handled separately via eval/run_baseline.py
     """
 
     def __init__(
@@ -88,23 +76,39 @@ class PromptToDrivePipeline:
         runner: Optional[CarlaRunner] = None,
         max_iterations: int = MAX_ITERATIONS,
         output_root: str = "outputs",
-        backend: Optional[str] = None,
+        hardware_profile: Optional[str] = None,
+        backend: str = "openai",
     ):
-        # `backend` is a convenience: if set (e.g. "openai" / "huggingface")
-        # and no explicit generator/verifier were passed, both agents are
-        # constructed against that backend. Pass generator/verifier directly
-        # if you want the two agents on *different* backends.
-        self.generator = generator or Generator(backend=backend)
-        self.verifier = verifier or Verifier(backend=backend)
+        from engine.hardware_config import get_preferred_towns
+
+        self.hardware_profile = hardware_profile
+        self.preferred_towns = None
+
+        if hardware_profile:
+            self.preferred_towns = get_preferred_towns(hardware_profile)
+            logger.info(
+                "Hardware profile '%s' active: restricted to towns %s",
+                hardware_profile,
+                self.preferred_towns,
+            )
+
+        self.backend_name = backend.lower()
+        self.backend = get_backend(self.backend_name)
+
+        self.generator = generator or Generator(
+            backend=self.backend,
+            preferred_towns=self.preferred_towns,
+        )
+
+        self.verifier = verifier or Verifier(
+            backend=self.backend,
+        )
+
         self.runner = runner or CarlaRunner()
         self.max_iterations = max_iterations
         self.output_root = Path(output_root)
 
-    def run(self, prompt: str, scenario_id: str, mode: str = "full",
-            status_callback: Optional[StatusCallback] = None,
-            live_frame_callback: Optional[Callable] = None,
-            rng_seed: Optional[int] = None) -> PipelineRun:
-        status_callback = status_callback or _noop_callback
+    def run(self, prompt: str, scenario_id: str, mode: str = "full") -> PipelineRun:
         t0 = time.time()
         run_record = PipelineRun(scenario_id=scenario_id, prompt=prompt, mode=mode)
         refinement_context = ""
@@ -112,20 +116,13 @@ class PromptToDrivePipeline:
         iterations = 1 if mode == "generator_only" else self.max_iterations
 
         for iteration in range(iterations):
-            status_callback("generator", {"iteration": iteration, "prompt": prompt})
             spec = self.generator.generate(prompt, refinement_context=refinement_context)
-            status_callback("generator_done", {"iteration": iteration, "spec": spec.model_dump()})
 
             iter_dir = self.output_root / scenario_id / f"iter_{iteration}"
-            status_callback("engine", {"iteration": iteration, "spec": spec.model_dump()})
             exec_result: ExecutionResult = self.runner.run(
-                spec, scenario_id=f"{scenario_id}_iter{iteration}", output_dir=str(iter_dir),
-                live_frame_callback=live_frame_callback,
-                rng_seed=(rng_seed + iteration) if rng_seed is not None else None,
+                spec, scenario_id=f"{scenario_id}_iter{iteration}", output_dir=str(iter_dir)
             )
-            status_callback("engine_done", {"iteration": iteration, "success": exec_result.success})
 
-            status_callback("verifier", {"iteration": iteration})
             verification: HybridVerificationResult = self.verifier.verify(
                 original_prompt=prompt,
                 spec=spec,
@@ -133,15 +130,6 @@ class PromptToDrivePipeline:
                 log_path=exec_result.log_path or "",
                 exec_success=exec_result.success,
             )
-            status_callback("verifier_done", {
-                "iteration": iteration,
-                "score": verification.final_score,
-                "predicate_agreement": verification.predicate_agreement,
-                "predicate_agreement_std": verification.predicate_agreement_std,
-                "passed": verification.overall_pass,
-                "missing_elements": verification.missing_elements,
-                "notes": verification.vlm_result.notes,
-            })
 
             run_record.iterations.append(
                 IterationRecord(
@@ -150,8 +138,6 @@ class PromptToDrivePipeline:
                     refinement_context=refinement_context or None,
                     execution_success=exec_result.success,
                     verification_score=verification.final_score,
-                    predicate_agreement=verification.predicate_agreement,
-                    predicate_agreement_std=verification.predicate_agreement_std,
                     verification_passed=verification.overall_pass,
                     missing_elements=verification.missing_elements,
                 )
@@ -159,26 +145,30 @@ class PromptToDrivePipeline:
 
             if verification.overall_pass:
                 run_record.final_status = "passed"
-                status_callback("done", {"final_status": "passed", "score": verification.final_score})
                 break
 
             if mode == "generator_only":
                 run_record.final_status = "generator_only_no_retry"
-                status_callback("done", {"final_status": run_record.final_status, "score": verification.final_score})
                 break
 
             if not exec_result.success and iteration == iterations - 1:
                 run_record.final_status = "execution_failed"
-                status_callback("done", {"final_status": "execution_failed", "score": verification.final_score})
                 break
 
-            # Prepare the next iteration's refinement context
-            status_callback("reflector", {"iteration": iteration, "missing_elements": verification.missing_elements})
-            refinement_context = reflect(prompt, spec, verification, iteration + 1)
-            status_callback("reflector_done", {"iteration": iteration, "refinement_context": refinement_context})
+            # BUG 1 FIX: only call reflect() when there is a next iteration to
+            # use the result. Previously reflect() fired on every iteration
+            # including the last, logging a spurious "Reflector iteration N"
+            # for a generation that would never run, and wasting an API call.
+            # The for/else sets final_status="iteration_limit_reached" after
+            # the loop exits naturally — reflect on the last iteration cannot
+            # change that outcome.
+            if iteration < iterations - 1:
+                refinement_context = reflect(
+                    prompt, verification, iteration + 1, preferred_towns=self.preferred_towns
+                )
+
         else:
             run_record.final_status = "iteration_limit_reached"
-            status_callback("done", {"final_status": "iteration_limit_reached"})
 
         run_record.total_wall_time_s = round(time.time() - t0, 2)
         self._persist(run_record)

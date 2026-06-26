@@ -46,6 +46,21 @@ PROFILES: dict[str, HardwareProfile] = {
         recommended_carla_flags="",
         notes="Assumes a discrete desktop GPU with >=6GB VRAM.",
     ),
+    "low_vram_2gb_signals": HardwareProfile(
+        name="low_vram_2gb_signals",
+        camera_width=480,
+        camera_height=270,
+        max_vehicles=4,
+        capture_every_s=3.0,
+        fixed_delta_seconds=0.1,
+        # Town01 (800MB) is used instead of Town03 (1200MB) because Town03
+        # exceeds practical VRAM budget on Quadro M620 class hardware under
+        # load. Town01 has adequate pedestrian and junction-adjacent spawn
+        # points for signal-related scenarios at this memory constraint.
+        preferred_towns=("Town01",),
+        recommended_carla_flags="-quality-level=Low -ResX=800 -ResY=600 -opengl -RenderOffScreen",
+        notes="Signal-adjacent profile for 2GB VRAM; Town01 used instead of Town03 to fit 2GB budget.",
+    ),
     "low_vram_2gb": HardwareProfile(
         name="low_vram_2gb",
         camera_width=480,

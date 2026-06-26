@@ -187,51 +187,53 @@ class Verifier:
              + "||" + str(spec.model_dump()) + "||" + str(frame_paths)).encode()
         ).hexdigest()
 
-        with shelve.open(str(CACHE_PATH)) as cache:
-            if cache_key in cache:
-                logger.debug("Verifier cache hit for %s [%s]", cache_key[:8], self.backend.name)
-                return HybridVerificationResult(**cache[cache_key])
+        # --- CACHE BYPASS PATCH FOR ACTIVE DEVELOPMENT MODE ---
+        # Disabling local storage checks to guarantee live frame evaluations and active updates
+        # with shelve.open(str(CACHE_PATH)) as cache:
+        #     if cache_key in cache:
+        #         logger.debug("Verifier cache hit for %s [%s]", cache_key[:8], self.backend.name)
+        #         return HybridVerificationResult(**cache[cache_key])
 
-            applicable = [name for name, fn in PREDICATE_APPLICABILITY.items() if fn(spec)]
+        applicable = [name for name, fn in PREDICATE_APPLICABILITY.items() if fn(spec)]
 
-            if not exec_success or not frame_paths:
-                samples = [self._failed_execution_result()]
-            else:
-                samples = [self._call_vlm(original_prompt, spec, frame_paths) for _ in range(self.n_samples)]
+        if not exec_success or not frame_paths:
+            samples = [self._failed_execution_result()]
+        else:
+            samples = [self._call_vlm(original_prompt, spec, frame_paths) for _ in range(self.n_samples)]
 
-            majority_result, agreement_scores = self._aggregate_samples(samples, applicable)
-            agreement_mean = statistics.fmean(agreement_scores)
-            agreement_std = statistics.pstdev(agreement_scores) if len(agreement_scores) > 1 else 0.0
+        majority_result, agreement_scores = self._aggregate_samples(samples, applicable)
+        agreement_mean = statistics.fmean(agreement_scores)
+        agreement_std = statistics.pstdev(agreement_scores) if len(agreement_scores) > 1 else 0.0
 
-            failed_predicates = [p for p in applicable if not majority_result.predicates[p]]
+        failed_predicates = [p for p in applicable if not majority_result.predicates[p]]
 
-            log_passed, log_total = self._validate_log(log_path, spec) if exec_success else (0, 4)
+        log_passed, log_total = self._validate_log(log_path, spec) if exec_success else (0, 4)
 
-            s_vlm = agreement_mean
-            s_log = log_passed / log_total if log_total > 0 else 0.0
-            s_exec = 1.0 if exec_success else 0.0
-            final_score = round(
-                SCORE_WEIGHTS["vlm"] * s_vlm + SCORE_WEIGHTS["log"] * s_log + SCORE_WEIGHTS["exec"] * s_exec,
-                4,
-            )
+        s_vlm = agreement_mean
+        s_log = log_passed / log_total if log_total > 0 else 0.0
+        s_exec = 1.0 if exec_success else 0.0
+        final_score = round(
+            SCORE_WEIGHTS["vlm"] * s_vlm + SCORE_WEIGHTS["log"] * s_log + SCORE_WEIGHTS["exec"] * s_exec,
+            4,
+        )
 
-            result = HybridVerificationResult(
-                vlm_result=majority_result,
-                predicate_agreement=round(agreement_mean, 4),
-                predicate_agreement_std=round(agreement_std, 4),
-                applicable_predicates=applicable,
-                failed_predicates=failed_predicates,
-                n_samples=len(samples),
-                log_checks_passed=log_passed,
-                log_checks_total=log_total,
-                execution_success=exec_success,
-                final_score=final_score,
-                overall_pass=final_score >= self.threshold,
-                backend_name=self.backend.name,
-            )
+        result = HybridVerificationResult(
+            vlm_result=majority_result,
+            predicate_agreement=round(agreement_mean, 4),
+            predicate_agreement_std=round(agreement_std, 4),
+            applicable_predicates=applicable,
+            failed_predicates=failed_predicates,
+            n_samples=len(samples),
+            log_checks_passed=log_passed,
+            log_checks_total=log_total,
+            execution_success=exec_success,
+            final_score=final_score,
+            overall_pass=final_score >= self.threshold,
+            backend_name=self.backend.name,
+        )
 
-            cache[cache_key] = result.model_dump()
-            return result
+        # cache[cache_key] = result.model_dump()
+        return result
 
     # ------------------------------------------------------------------ #
     def _aggregate_samples(
