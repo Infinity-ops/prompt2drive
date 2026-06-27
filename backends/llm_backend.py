@@ -228,6 +228,7 @@ class HFBackend(TextBackend, VisionBackend):
     # If the configured model returns a 400 "not supported by any provider",
     # we fall back through this list before giving up and returning zeros.
     _VISION_FALLBACKS = [
+            "Qwen/Qwen2-7B-Instruct",
             "Qwen/Qwen2.5-VL-7B-Instruct",
             "meta-llama/Llama-3.2-11B-Vision-Instruct",
         ]

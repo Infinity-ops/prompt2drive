@@ -307,11 +307,7 @@ class CarlaRunner:
                     state_log["pedestrian_spawned"] = True
                     state_log["actors"].append({"type": "pedestrian", "id": walker_actor.id})
 
-                    # Tick once to register the walker before spawning its
-                    # controller. Spawning the controller before the walker is
-                    # registered in a tick is the primary cause of the C++
-                    # "trying to operate on a destroyed actor" abort seen in
-                    # CARLA 0.9.x on low-VRAM hardware.
+                    # Tick once to register the walker before spawning its controller.
                     self._world.tick()
 
                     ctrl_bp = blueprint_library.find("controller.ai.walker")
@@ -319,9 +315,7 @@ class CarlaRunner:
                         ctrl_bp, carla.Transform(), attach_to=walker_actor
                     )
 
-                    # Tick again to register the controller before calling
-                    # start(). This is the second required tick — skipping it
-                    # is what causes the abort in the original code.
+                    # Tick again to register the controller before calling start().
                     self._world.tick()
 
                     try:
@@ -330,6 +324,9 @@ class CarlaRunner:
                         if target is not None:
                             walker_controller.go_to_location(target)
                         walker_controller.set_max_speed(1.4)
+                        
+                        # Guarded registration tick: Ensure the navigation route 
+                        # binds properly inside the engine stack before the loop.
                         self._world.tick()
                     except RuntimeError as e:
                         logger.warning("[%s] Walker controller failed: %s", scenario_id, e)
