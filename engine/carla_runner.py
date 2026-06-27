@@ -424,19 +424,6 @@ class CarlaRunner:
             )
 
         finally:
-            # Teardown order matters. Destroy in reverse dependency order:
-            #   1. Stop camera stream first (before any destroy calls)
-            #   2. Stop walker controller
-            #   3. Destroy walker controller
-            #   4. Destroy walker
-            #   5. Destroy NPC vehicles
-            #   6. Destroy camera (attached to ego; must go before ego)
-            #   7. Destroy ego last
-            #
-            # If ego is destroyed before camera, CARLA auto-destroys the
-            # attached camera, making our explicit camera.destroy() hit a
-            # dead actor. Always destroy camera before ego.
-
             callback_active = False
 
             # 1. Stop camera stream
@@ -445,7 +432,6 @@ class CarlaRunner:
                     camera.stop()
                 except Exception:
                     pass
-            # Brief pause to let the stream drain before destroying
             time.sleep(0.15)
 
             # 2+3. Stop and destroy walker controller
@@ -469,3 +455,8 @@ class CarlaRunner:
 
             # 7. Destroy ego last
             self._safe_destroy(ego_vehicle)
+            
+            # === ADD THIS FIX HERE ===
+            # Allow the CARLA physics server engine to flush deleted actor IDs 
+            # out of the pipeline registry before the next reflection iteration triggers.
+            time.sleep(2.0)
