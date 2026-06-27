@@ -1,0 +1,70 @@
+{
+  "dataset_version": "1.0-lowspec",
+  "description": "8-scenario reduced subset of dataset.json for hardware-constrained machines (e.g. 2GB VRAM mobile GPUs like the Quadro M620). Restricted to Town01/Town02 and lower vehicle counts to keep CARLA's render load manageable. Use this for a first end-to-end pass before attempting the full 20-scenario dataset.json.",
+  "scenarios": [
+    {
+      "id": "s01",
+      "prompt": "A pedestrian suddenly crosses near a quiet junction in rainy weather.",
+      "difficulty": "easy",
+      "expected_weather": "rain",
+      "expected_actors": ["pedestrian"],
+      "expected_event": "crossing"
+    },
+    {
+      "id": "s02",
+      "prompt": "Sudden lane change to avoid a parked vehicle on a clear day.",
+      "difficulty": "easy",
+      "expected_weather": "clear",
+      "expected_actors": ["vehicle"],
+      "expected_event": "lane_change"
+    },
+    {
+      "id": "s05",
+      "prompt": "A parked vehicle obstructs the lane on a cloudy day, forcing a small detour.",
+      "difficulty": "easy",
+      "expected_weather": "cloudy",
+      "expected_actors": ["vehicle"],
+      "expected_event": "obstruction"
+    },
+    {
+      "id": "s10",
+      "prompt": "A vehicle runs a red light at a quiet signalized intersection in clear daylight.",
+      "difficulty": "easy",
+      "expected_weather": "clear",
+      "expected_actors": ["vehicle"],
+      "expected_event": "red_light_violation"
+    },
+    {
+      "id": "s14",
+      "prompt": "A cyclist crosses an intersection just as the light changes, in clear weather.",
+      "difficulty": "easy",
+      "expected_weather": "clear",
+      "expected_actors": ["cyclist"],
+      "expected_event": "crossing"
+    },
+    {
+      "id": "s16",
+      "prompt": "A pedestrian darts between two parked cars into a quiet road in clear daylight.",
+      "difficulty": "medium",
+      "expected_weather": "clear",
+      "expected_actors": ["pedestrian"],
+      "expected_event": "crossing"
+    },
+    {
+      "id": "s18",
+      "prompt": "A vehicle blocks a small intersection after running a red light on a cloudy day.",
+      "difficulty": "medium",
+      "expected_weather": "cloudy",
+      "expected_actors": ["vehicle"],
+      "expected_event": "red_light_violation"
+    },
+    {
+      "id": "s20",
+      "prompt": "A stalled vehicle obstructs a junction approach during light rain.",
+      "difficulty": "easy",
+      "expected_weather": "rain",
+      "expected_actors": ["vehicle"],
+      "expected_event": "obstruction"
+    }
+  ]
+}

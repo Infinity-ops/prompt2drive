@@ -16,7 +16,6 @@ in the paper; the engine-side half is the deterministic CarlaRunner.
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import shelve
 from pathlib import Path
@@ -25,6 +24,7 @@ from typing import Optional
 from openai import OpenAI
 from pydantic import ValidationError
 
+from backends.llm_backend import OpenAIBackend, HFBackend
 from engine.scenario_spec import ScenarioSpec
 
 logger = logging.getLogger("prompt_to_drive.generator")
@@ -41,8 +41,9 @@ ScenarioSpec JSON object that a deterministic CARLA execution engine can run.
 You MUST only use these exact fields and value ranges:
 - weather: one of "clear", "rain", "fog", "night", "cloudy"
 - town: one of "Town01", "Town02", "Town03", "Town04", "Town05"
-  (Town03 and Town04 have signalized intersections; Town01 has dense
-   pedestrian-friendly sidewalks; Town04 has highway segments)
+  (Town01 is preferred for pedestrian scenarios; Town03 and Town04 are
+   preferred for signalized-intersection scenarios when available; Town04
+   is preferred for highway scenarios)
 - num_vehicles: integer 0-20
 - pedestrian: boolean
 - cyclist: boolean
@@ -52,21 +53,21 @@ You MUST only use these exact fields and value ranges:
 - spawn_point_index: integer 0-200 (use 0-12 for junction-proximate scenes)
 - notes: a one-sentence rationale for your choices
 
-Examples:
+Examples (select town based on scenario features, not repetition):
 prompt: "A pedestrian suddenly crosses near a traffic signal in rainy weather."
--> {"weather": "rain", "town": "Town03", "num_vehicles": 3, "pedestrian": true,
+-> {"weather": "rain", "town": "Town01", "num_vehicles": 3, "pedestrian": true,
     "cyclist": false, "event_type": "crossing", "duration_s": 15,
-    "spawn_point_index": 6, "notes": "Town03 junction, rain, pedestrian crossing."}
+    "spawn_point_index": 6, "notes": "Town01 pedestrian-friendly area, rain, crossing."}
 
 prompt: "Sudden lane change to avoid a parked vehicle on a sunny highway."
 -> {"weather": "clear", "town": "Town04", "num_vehicles": 6, "pedestrian": false,
     "cyclist": false, "event_type": "lane_change", "duration_s": 12,
     "spawn_point_index": 20, "notes": "Town04 highway segment for lane change."}
 
-prompt: "A cyclist runs a red light in foggy conditions at night."
+prompt: "A cyclist runs a red light in foggy conditions at a busy junction."
 -> {"weather": "fog", "town": "Town03", "num_vehicles": 4, "pedestrian": false,
     "cyclist": true, "event_type": "red_light_violation", "duration_s": 14,
-    "spawn_point_index": 8, "notes": "Town03 junction with fog for visibility test."}
+    "spawn_point_index": 8, "notes": "Town03 junction with signalized intersection."}
 
 If a refinement context is provided (from a previous failed verification),
 apply the required corrections precisely while preserving fields that were
@@ -74,39 +75,88 @@ already verified as correct. Return ONLY the JSON object, no prose."""
 
 
 class Generator:
-    def __init__(self, model: str = "gpt-4o-2024-08-06", client: Optional[OpenAI] = None):
-        self.model = model
-        self.client = client or OpenAI()
+    def __init__(
+        self,
+        backend: OpenAIBackend | HFBackend,
+        preferred_towns: Optional[tuple[str, ...]] = None,
+    ):
+        self.backend = backend
+        self.preferred_towns = preferred_towns
 
     def generate(self, prompt: str, refinement_context: str = "") -> ScenarioSpec:
         """
-        Convert a natural language prompt (+ optional refinement context)
+        Convert a natural-language prompt (+ optional refinement context)
         into a validated ScenarioSpec. Results are cached by the combined
         input hash so repeated runs never re-spend API budget.
         """
-        cache_key = hashlib.md5((prompt + "||" + refinement_context).encode()).hexdigest()
-
+        hardware_key = ",".join(self.preferred_towns or ())
+        cache_key = hashlib.md5(
+            (prompt + "||" + refinement_context + "||" + hardware_key).encode()
+        ).hexdigest()
         with shelve.open(str(CACHE_PATH)) as cache:
             if cache_key in cache:
                 logger.debug("Generator cache hit for %s", cache_key[:8])
-                return ScenarioSpec(**cache[cache_key])
+                cached_spec = ScenarioSpec.model_validate(cache[cache_key])
 
-            user_content = prompt if not refinement_context else f"{prompt}\n\n{refinement_context}"
+                # Do not allow a cache created under another hardware profile
+                # to bypass the current town restriction.
+                if (
+                    self.preferred_towns
+                    and cached_spec.town not in self.preferred_towns
+                ):
+                    logger.warning(
+                        "Ignoring cached scenario for forbidden town '%s'; "
+                        "allowed towns are %s.",
+                        cached_spec.town,
+                        self.preferred_towns,
+                    )
+                else:
+                    return cached_spec
 
-            response = self.client.beta.chat.completions.parse(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": user_content},
-                ],
-                response_format=ScenarioSpec,
-                temperature=0.2,
+            user_content = (
+                prompt
+                if not refinement_context
+                else f"{prompt}\n\n{refinement_context}"
             )
 
-            parsed = response.choices[0].message.parsed
-            if parsed is None:
-                raise ValidationError.from_exception_data(
-                    "ScenarioSpec", [{"type": "missing", "loc": (), "input": None}]
+            system_prompt = SYSTEM_PROMPT
+
+            if self.preferred_towns:
+                towns_str = ", ".join(self.preferred_towns)
+                system_prompt += (
+                    f"\n\n*** HARDWARE CONSTRAINT: You must use only these towns: "
+                    f"{towns_str}. "
+                    "This restriction overrides any town preference stated above. "
+                    "If the user requests a feature normally associated with an "
+                    "unavailable town (for example, a traffic signal or highway), "
+                    "preserve the requested driving event, weather, "
+                    "pedestrian/cyclist behavior, and vehicle behavior using the "
+                    "best available spawn point in an allowed town. "
+                    "Do not select a forbidden town. "
+                    "Do not claim in notes that an unavailable map feature was "
+                    "guaranteed. ***"
+                )
+
+            # RC#7: generate_structured must run regardless of preferred_towns.
+            # Previously it was incorrectly nested inside the `if self.preferred_towns`
+            # block, causing a NameError when no hardware profile was active.
+            try:
+                parsed = self.backend.generate_structured(
+                    system_prompt=system_prompt,
+                    user_prompt=user_content,
+                    schema=ScenarioSpec,
+                )
+            except ValidationError:
+                logger.exception("Backend returned an invalid ScenarioSpec.")
+                raise
+
+            if (
+                self.preferred_towns
+                and parsed.town not in self.preferred_towns
+            ):
+                raise ValueError(
+                    f"Generator selected forbidden town '{parsed.town}'. "
+                    f"Allowed towns: {', '.join(self.preferred_towns)}"
                 )
 
             cache[cache_key] = parsed.model_dump()

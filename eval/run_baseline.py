@@ -37,12 +37,12 @@ world = client.get_world()
 """
 
 
-def run_one(prompt: str, scenario_id: str, out_dir: Path) -> dict:
+def run_one(prompt: str, scenario_id: str, out_dir: Path, backend: str | None = None) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
-    record = {"scenario_id": scenario_id, "prompt": prompt}
+    record = {"scenario_id": scenario_id, "prompt": prompt, "backend": backend or "openai"}
 
     try:
-        code = generate_baseline_code(prompt)
+        code = generate_baseline_code(prompt, backend=backend)
         # strip markdown fences if present
         code = code.replace("```python", "").replace("```", "").strip()
         full_script = CARLA_BOILERPLATE + "\n" + code
@@ -73,6 +73,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", default="scenarios/dataset.json")
     parser.add_argument("--out", default="outputs/baseline")
+    parser.add_argument(
+        "--backend", choices=["openai", "huggingface"], default=None,
+        help="Backend for free-form baseline code generation. Defaults to "
+             "P2D_TEXT_BACKEND env var, or 'openai'.",
+    )
     args = parser.parse_args()
 
     dataset = json.loads(Path(args.dataset).read_text())
@@ -80,8 +85,8 @@ def main():
     results = []
 
     for s in dataset["scenarios"]:
-        logger.info("Running baseline for %s", s["id"])
-        result = run_one(s["prompt"], s["id"], out_root / s["id"])
+        logger.info("Running baseline for %s [backend=%s]", s["id"], args.backend or "openai")
+        result = run_one(s["prompt"], s["id"], out_root / s["id"], backend=args.backend)
         results.append(result)
 
     summary_path = out_root / "baseline_results.json"

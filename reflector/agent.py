@@ -22,13 +22,14 @@ logger = logging.getLogger("prompt_to_drive.reflector")
 # Extend this table as new failure modes are observed in your own dataset.
 ELEMENT_CORRECTIONS: dict[str, str] = {
     "traffic_light": (
-        "Ensure the scenario uses Town03 or Town04, both of which have "
-        "signalized intersections. Set spawn_point_index in the 5-12 range "
+        "Ensure the scenario uses a town with signalized intersections "
+        "(Town03 or Town04 are recommended). Set spawn_point_index in the 5-12 range "
         "so actors are placed near a junction."
     ),
     "junction": (
         "Set spawn_point_index in the 5-12 range to place actors near a "
-        "signalized junction in Town03 or Town04."
+        "signalized junction (consider Town03 or Town04, but select based on other "
+        "scenario requirements)."
     ),
     "rain": (
         "Set weather='rain'. CARLA renders this with high precipitation "
@@ -43,8 +44,8 @@ ELEMENT_CORRECTIONS: dict[str, str] = {
         "scenes need more frames to be visually verifiable."
     ),
     "pedestrian": (
-        "Set pedestrian=true. Prefer Town01 or Town03 which have denser "
-        "sidewalk geometry. Use spawn_point_index in the 0-5 range for "
+        "Set pedestrian=true. Select a town with dense pedestrian infrastructure "
+        "(Town01 or Town03 are options). Use spawn_point_index in the 0-5 range for "
         "sidewalk proximity."
     ),
     "cyclist": "Set cyclist=true and ensure event_type matches the described cyclist behavior.",
@@ -82,13 +83,14 @@ def reflect(
     original_prompt: str,
     verification_result: HybridVerificationResult,
     iteration: int,
+    preferred_towns: tuple[str, ...] | None = None,
 ) -> str:
     """
     Build a refinement_context string to prepend to the next Generator
     call. This is the entire interface between the Verifier and the next
     Generator iteration -- keep it self-contained and explicit.
     """
-    missing = verification_result.vlm_result.missing_elements
+    missing = verification_result.missing_elements
     excess = verification_result.vlm_result.excess_elements
     score = verification_result.final_score
 
@@ -107,13 +109,21 @@ def reflect(
 
     affected_fields = sorted({e.split("_")[0] for e in missing}) if missing else ["all fields"]
 
+    hardware_note = ""
+    if preferred_towns:
+        towns_str = ", ".join(preferred_towns)
+        hardware_note = (
+            f"\nIMPORTANT: Hardware constraint active. Only use these towns: {towns_str}. "
+            f"The system cannot handle larger maps due to memory limitations."
+        )
+
     context = f"""[REFLECTION -- iteration {iteration}]
 Previous semantic alignment score: {score:.2f} (pass threshold: {verification_result.overall_pass and "PASSED" or "0.72"})
 Verifier notes: {verification_result.vlm_result.notes}
 Missing elements identified: {missing}
 
 REQUIRED CORRECTIONS for this regeneration:
-{chr(10).join(corrections)}{excess_notes}
+{chr(10).join(corrections)}{excess_notes}{hardware_note}
 
 Apply all corrections above. Preserve any field NOT implicated in the
 missing-element list, since it was already verified as correct.

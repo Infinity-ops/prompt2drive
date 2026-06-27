@@ -8,9 +8,18 @@ Usage:
     python run_scenario.py --prompt "A pedestrian crosses near a junction in rain" \\
         --scenario-id demo01 --mode full
 
+    # Low VRAM systems (avoid crashes on small machines):
+    python run_scenario.py --prompt "A pedestrian crosses near a junction in rain" \\
+        --hardware-profile low_vram_2gb
+
 Requires:
     - A running CARLA server (see README "Prerequisites")
     - OPENAI_API_KEY set in your environment or .env file
+
+Hardware Profiles:
+    - high_performance: Unrestricted town selection (4GB+ VRAM)
+    - standard: Mid-range systems (2-4GB VRAM) 
+    - low_vram_2gb: Constrained systems - restricts to Town01/Town02 only
 """
 from __future__ import annotations
 
@@ -38,20 +47,51 @@ def main():
     parser.add_argument("--carla-port", type=int, default=2000)
     parser.add_argument("--max-iterations", type=int, default=3)
     parser.add_argument("--out", default="outputs")
+    parser.add_argument(
+        "--hardware-profile",
+        choices=["high_performance", "standard", "low_vram_2gb", "low_vram_2gb_signals"],
+        default=None,
+        help="Hardware constraints for town selection. "
+        "'low_vram_2gb' restricts to Town01/Town02 to avoid OOM.",
+    )
+    parser.add_argument(
+        "--backend",
+        choices=["openai", "huggingface"],
+        default="openai",
+        help="LLM backend used for generation and verification.",
+    )
     args = parser.parse_args()
 
-    if not os.getenv("OPENAI_API_KEY"):
+    if args.backend == "openai" and not os.getenv("OPENAI_API_KEY"):
         raise SystemExit(
-            "OPENAI_API_KEY is not set. Create a .env file (see .env.example) "
-            "or export it in your shell before running."
+            "OPENAI_API_KEY is not set. Create a .env file or export it before running."
         )
 
-    runner = CarlaRunner(host=args.carla_host, port=args.carla_port)
+    if args.backend == "huggingface" and not os.getenv("HF_TOKEN"):
+        raise SystemExit(
+            "HF_TOKEN is not set. Create a .env file or export it before running."
+        )
+
+    runner = CarlaRunner(
+        host=args.carla_host,
+        port=args.carla_port,
+        hardware_profile=args.hardware_profile,
+    )
     pipeline = PromptToDrivePipeline(
-        runner=runner, max_iterations=args.max_iterations, output_root=args.out
+        runner=runner,
+        max_iterations=args.max_iterations,
+        output_root=args.out,
+        hardware_profile=args.hardware_profile,
+        backend=args.backend,
     )
 
-    print(f"\nRunning scenario '{args.scenario_id}' in mode='{args.mode}'")
+    profile_info = ""
+    if args.hardware_profile:
+        from engine.hardware_config import get_profile_info
+        info = get_profile_info(args.hardware_profile)
+        profile_info = f" [Hardware: {info['description']}]"
+
+    print(f"\nRunning scenario '{args.scenario_id}' in mode='{args.mode}'{profile_info}")
     print(f"Prompt: {args.prompt}\n")
 
     run = pipeline.run(prompt=args.prompt, scenario_id=args.scenario_id, mode=args.mode)

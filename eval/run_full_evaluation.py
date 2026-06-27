@@ -37,23 +37,38 @@ def main():
     parser.add_argument("--max-iterations", type=int, default=3)
     parser.add_argument("--carla-host", default="localhost")
     parser.add_argument("--carla-port", type=int, default=2000)
+    parser.add_argument(
+        "--backend", choices=["openai", "huggingface"], default=None,
+        help="LLM/VLM backend for both Generator and Verifier. Defaults to "
+             "P2D_TEXT_BACKEND / P2D_VISION_BACKEND env vars, or 'openai'.",
+    )
+    parser.add_argument(
+        "--hardware-profile", default=None,
+        choices=["default", "low_vram_2gb", "headless_ci"],
+        help="Use 'low_vram_2gb' for 2GB-VRAM mobile GPUs such as the Quadro M620.",
+    )
     args = parser.parse_args()
 
     dataset = json.loads(Path(args.dataset).read_text())
 
     from engine.carla_runner import CarlaRunner
-    runner = CarlaRunner(host=args.carla_host, port=args.carla_port)
+    runner = CarlaRunner(host=args.carla_host, port=args.carla_port,
+                          hardware_profile=args.hardware_profile)
 
     pipeline = PromptToDrivePipeline(
         runner=runner,
         max_iterations=args.max_iterations,
         output_root=args.out,
+        backend=args.backend,
     )
 
     all_runs = []
     for s in dataset["scenarios"]:
         logger.info("Running scenario %s (mode=%s): %s", s["id"], args.mode, s["prompt"])
-        run = pipeline.run(prompt=s["prompt"], scenario_id=s["id"], mode=args.mode)
+        run = pipeline.run(
+            prompt=s["prompt"], scenario_id=s["id"], mode=args.mode,
+            rng_seed=s.get("rng_seed"),  # present only for expanded/seeded dataset entries
+        )
         all_runs.append(run.scenario_id)
         logger.info("  -> status=%s, final_score=%.2f, iterations=%d",
                     run.final_status,

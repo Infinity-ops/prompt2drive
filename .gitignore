@@ -11,3 +11,5 @@ eval/results/*
 .DS_Store
 .venv/
 venv/
+.esweek_env/
+crash_trace.log

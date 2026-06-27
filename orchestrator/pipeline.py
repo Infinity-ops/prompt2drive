@@ -23,6 +23,7 @@ from engine.scenario_spec import ScenarioSpec
 from generator.agent import Generator
 from reflector.agent import reflect
 from verifier.agent import HybridVerificationResult, Verifier
+from backends.llm_backend import get_backend
 
 logger = logging.getLogger("prompt_to_drive.orchestrator")
 
@@ -63,9 +64,9 @@ class PromptToDrivePipeline:
     """
     The main closed-loop entry point.
 
-    mode="full"            -> Generator -> Engine -> Verifier -> Reflector loop (full system)
-    mode="generator_only"   -> Generator -> Engine -> Verifier, NO reflection retries
-    mode="baseline"          -> handled separately via eval/run_baseline.py (free-form code gen)
+    mode="full"            -> Generator -> Engine -> Verifier -> Reflector loop
+    mode="generator_only"  -> Generator -> Engine -> Verifier, NO reflection retries
+    mode="baseline"        -> handled separately via eval/run_baseline.py
     """
 
     def __init__(
@@ -75,9 +76,34 @@ class PromptToDrivePipeline:
         runner: Optional[CarlaRunner] = None,
         max_iterations: int = MAX_ITERATIONS,
         output_root: str = "outputs",
+        hardware_profile: Optional[str] = None,
+        backend: str = "openai",
     ):
-        self.generator = generator or Generator()
-        self.verifier = verifier or Verifier()
+        from engine.hardware_config import get_preferred_towns
+
+        self.hardware_profile = hardware_profile
+        self.preferred_towns = None
+
+        if hardware_profile:
+            self.preferred_towns = get_preferred_towns(hardware_profile)
+            logger.info(
+                "Hardware profile '%s' active: restricted to towns %s",
+                hardware_profile,
+                self.preferred_towns,
+            )
+
+        self.backend_name = backend.lower()
+        self.backend = get_backend(self.backend_name)
+
+        self.generator = generator or Generator(
+            backend=self.backend,
+            preferred_towns=self.preferred_towns,
+        )
+
+        self.verifier = verifier or Verifier(
+            backend=self.backend,
+        )
+
         self.runner = runner or CarlaRunner()
         self.max_iterations = max_iterations
         self.output_root = Path(output_root)
@@ -113,7 +139,7 @@ class PromptToDrivePipeline:
                     execution_success=exec_result.success,
                     verification_score=verification.final_score,
                     verification_passed=verification.overall_pass,
-                    missing_elements=verification.vlm_result.missing_elements,
+                    missing_elements=verification.missing_elements,
                 )
             )
 
@@ -129,8 +155,18 @@ class PromptToDrivePipeline:
                 run_record.final_status = "execution_failed"
                 break
 
-            # Prepare the next iteration's refinement context
-            refinement_context = reflect(prompt, verification, iteration + 1)
+            # BUG 1 FIX: only call reflect() when there is a next iteration to
+            # use the result. Previously reflect() fired on every iteration
+            # including the last, logging a spurious "Reflector iteration N"
+            # for a generation that would never run, and wasting an API call.
+            # The for/else sets final_status="iteration_limit_reached" after
+            # the loop exits naturally — reflect on the last iteration cannot
+            # change that outcome.
+            if iteration < iterations - 1:
+                refinement_context = reflect(
+                    prompt, verification, iteration + 1, preferred_towns=self.preferred_towns
+                )
+
         else:
             run_record.final_status = "iteration_limit_reached"
 

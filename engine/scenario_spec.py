@@ -55,7 +55,7 @@ class ScenarioSpec(BaseModel):
         "json_schema_extra": {
             "example": {
                 "weather": "rain",
-                "town": "Town03",
+                "town": Town,
                 "num_vehicles": 4,
                 "pedestrian": True,
                 "event_type": "crossing",
