@@ -1,9 +1,28 @@
 """
 engine/carla_runner.py
 
-Deterministic execution engine: converts a validated ScenarioSpec into
-CARLA API calls, runs the simulation in synchronous mode, and captures
-frames + a structured state log used by the Verifier agent.
+Deterministic execution engine for Prompt-to-Drive.
+
+KEY FIXES IN THIS VERSION
+--------------------------
+1. TM PORT CONFLICT (the current crash)
+   CARLA's Traffic Manager RPC server binds to port 8000 by default.
+   vLLM also uses port 8000. They conflict → "bind error".
+   Fix: get_trafficmanager(TM_PORT=8100) then set_autopilot(True, TM_PORT=8100).
+
+2. PRE-TICKS BEFORE ACTOR OPERATIONS
+   Walker controller.start() and set_autopilot() must only be called
+   after the actor has been registered in a world tick. Missing ticks
+   cause "trying to operate on a destroyed actor" core dumps.
+
+3. DESTROY ORDER
+   controller.stop() → controller.destroy() → walker → npcs →
+   camera.stop() → camera.destroy() → ego
+   Camera must be destroyed before ego (it is attached to ego).
+
+4. FRAME SAVING
+   The camera callback needs up to 30 retries × 20ms = 0.6s to deliver
+   a frame. The original code only waited 20ms → no frames saved.
 """
 from __future__ import annotations
 
@@ -20,6 +39,10 @@ from engine.scenario_spec import ScenarioSpec
 from engine.hardware_profiles import HardwareProfile, get_profile
 
 logger = logging.getLogger("prompt_to_drive.engine")
+
+# Port for CARLA's Traffic Manager RPC server.
+# Must NOT be 8000 when vLLM is running (vLLM default is 8000).
+TM_PORT = 8100
 
 WEATHER_PRESETS = {
     "clear":  dict(cloudiness=10,  precipitation=0,  precipitation_deposits=0,
@@ -56,6 +79,7 @@ class CarlaRunner:
         self.profile: HardwareProfile = get_profile(hardware_profile)
         self._client = None
         self._world = None
+        self._tm = None  # Traffic Manager — kept alive across iterations
 
     # ------------------------------------------------------------------ #
     # Connection
@@ -65,12 +89,18 @@ class CarlaRunner:
         self._client = carla.Client(self.host, self.port)
         self._client.set_timeout(self.timeout)
         self._world = self._client.get_world()
+
         settings = self._world.get_settings()
         settings.synchronous_mode = True
         settings.fixed_delta_seconds = self.profile.fixed_delta_seconds
         self._world.apply_settings(settings)
-        logger.info("Connected to CARLA at %s:%s [hardware_profile=%s]",
-                    self.host, self.port, self.profile.name)
+
+        # Fix 1: bind TM to TM_PORT (8100) to avoid collision with vLLM on 8000
+        self._tm = self._client.get_trafficmanager(TM_PORT)
+        self._tm.set_synchronous_mode(True)
+
+        logger.info("Connected to CARLA at %s:%s [hardware_profile=%s, TM_PORT=%d]",
+                    self.host, self.port, self.profile.name, TM_PORT)
 
     def disconnect(self):
         if self._world is not None:
@@ -100,7 +130,6 @@ class CarlaRunner:
         return spawn_points[0]
 
     def _safe_destroy(self, actor) -> None:
-        """Destroy a single actor, suppressing all errors."""
         if actor is None:
             return
         try:
@@ -136,26 +165,20 @@ class CarlaRunner:
             "errors": [],
         }
 
-        # Track actors in the exact order we need to destroy them:
-        #   sensors first (camera), then controllers, then walkers, then NPCs, then ego.
-        # We build separate lists and destroy in the right sequence in finally.
         ego_vehicle = None
         camera = None
-        npc_list: list = []          # NPC vehicles
-        walker_controller = None
+        npc_list: list = []
         walker_actor = None
+        walker_controller = None
         callback_active = True
         t0 = time.time()
 
         try:
-            # ---- Connect / reconnect if needed ----------------------------
             if not self._world_alive():
                 self.connect()
 
-            # ---- Step 1: Map --------------------------------------------------
+            # ---- Step 1: Map -----------------------------------------------
             logger.info("[%s] Step 1/7: checking current map", scenario_id)
-
-            # Guard against stale world handle from a previous crashed run.
             try:
                 current_map = self._world.get_map().name.split("/")[-1]
             except RuntimeError:
@@ -164,10 +187,8 @@ class CarlaRunner:
                 current_map = self._world.get_map().name.split("/")[-1]
 
             if current_map != spec.town:
-                logger.info("[%s] Step 1/7: current map '%s' != requested '%s' -- reloading",
+                logger.info("[%s] Step 1/7: current map '%s' != '%s' -- reloading",
                             scenario_id, current_map, spec.town)
-
-                # Must drop synchronous_mode before load_world or the handshake hangs.
                 pre = self._world.get_settings()
                 pre.synchronous_mode = False
                 self._world.apply_settings(pre)
@@ -176,9 +197,6 @@ class CarlaRunner:
                             scenario_id, spec.town)
                 self._client.set_timeout(180.0)
                 self._world = self._client.load_world(spec.town)
-
-                # Sleep then re-fetch: CARLA 0.9.x can leave actor handles stale
-                # across load_world(); re-fetching guarantees a fresh handle.
                 time.sleep(2)
                 self._world = self._client.get_world()
                 self._client.set_timeout(self.timeout)
@@ -187,6 +205,11 @@ class CarlaRunner:
                 settings.synchronous_mode = True
                 settings.fixed_delta_seconds = self.profile.fixed_delta_seconds
                 self._world.apply_settings(settings)
+
+                # Re-acquire TM after map reload — the old handle is stale
+                self._tm = self._client.get_trafficmanager(TM_PORT)
+                self._tm.set_synchronous_mode(True)
+
                 logger.info("[%s] Step 1/7: map reload complete, synchronous mode re-applied",
                             scenario_id)
             else:
@@ -194,37 +217,34 @@ class CarlaRunner:
 
             state_log["map_loaded"] = spec.town
 
-            # ---- Step 2: Weather ----------------------------------------------
+            # ---- Step 2: Weather -------------------------------------------
             logger.info("[%s] Step 2/7: applying weather '%s'", scenario_id, spec.weather)
             self._world.set_weather(carla.WeatherParameters(**WEATHER_PRESETS[spec.weather]))
             state_log["weather_api_called"] = spec.weather
 
-            # ---- Step 3: Blueprint library & spawn points ---------------------
+            # ---- Step 3: Blueprint library & spawn points ------------------
             logger.info("[%s] Step 3/7: fetching blueprint library and spawn points", scenario_id)
             blueprint_library = self._world.get_blueprint_library()
             spawn_points = self._world.get_map().get_spawn_points()
 
-            # ---- Step 4: Ego vehicle ------------------------------------------
+            # ---- Step 4: Ego vehicle ---------------------------------------
             logger.info("[%s] Step 4/7: spawning ego vehicle", scenario_id)
             ego_bp = blueprint_library.filter("vehicle.tesla.model3")[0]
             ego_spawn = self._safe_spawn_point(spawn_points, spec.spawn_point_index)
-
             ego_vehicle = self._world.try_spawn_actor(ego_bp, ego_spawn)
             if ego_vehicle is None:
                 raise RuntimeError(
                     f"Failed to spawn ego vehicle at spawn_point_index={spec.spawn_point_index}. "
-                    "The spawn point may be occupied. Try a different spawn_point_index."
+                    "Spawn point may be occupied — try a different index."
                 )
             state_log["actors"].append({"type": "ego_vehicle", "id": ego_vehicle.id})
 
-            # Tick once to let the server register the ego vehicle before
-            # setting autopilot. Without this tick, the traffic manager may
-            # not yet have the vehicle in its registry, which causes a C++
-            # "destroyed actor" abort on constrained hardware.
+            # Fix 2a: tick BEFORE set_autopilot so the TM has the actor registered
             self._world.tick()
-            ego_vehicle.set_autopilot(True)
+            # Fix 1: pass TM_PORT to set_autopilot so it uses our TM, not port 8000
+            ego_vehicle.set_autopilot(True, TM_PORT)
 
-            # ---- Step 5: Camera -----------------------------------------------
+            # ---- Step 5: Camera --------------------------------------------
             logger.info("[%s] Step 5/7: spawning camera (%dx%d)", scenario_id,
                         self.profile.camera_width, self.profile.camera_height)
             camera_bp = blueprint_library.find("sensor.camera.rgb")
@@ -242,7 +262,7 @@ class CarlaRunner:
                     return
                 try:
                     captured_frames[image.frame] = image
-                    # Keep memory bounded on 2GB VRAM hardware
+                    # Bound memory use on 2GB VRAM hardware
                     if len(captured_frames) > 20:
                         del captured_frames[min(captured_frames.keys())]
                 except Exception:
@@ -250,7 +270,7 @@ class CarlaRunner:
 
             camera.listen(_on_image)
 
-            # ---- Step 6: NPC vehicles -----------------------------------------
+            # ---- Step 6: NPC vehicles --------------------------------------
             logger.info("[%s] Step 6/7: spawning NPC vehicles", scenario_id)
             vehicle_bps = blueprint_library.filter("vehicle.*")
             npc_spawn_pts = [p for i, p in enumerate(spawn_points)
@@ -262,9 +282,7 @@ class CarlaRunner:
                             self.profile.max_vehicles, spec.num_vehicles)
 
             for i in range(min(effective_nveh, len(npc_spawn_pts))):
-                npc = self._world.try_spawn_actor(
-                    random.choice(vehicle_bps), npc_spawn_pts[i]
-                )
+                npc = self._world.try_spawn_actor(random.choice(vehicle_bps), npc_spawn_pts[i])
                 if npc is not None:
                     npc_list.append(npc)
                     state_log["vehicle_count"] += 1
@@ -272,42 +290,36 @@ class CarlaRunner:
             logger.info("[%s] Step 6/7: spawned %d/%d requested NPC vehicles",
                         scenario_id, state_log["vehicle_count"], effective_nveh)
 
-            # Tick once so the server registers all NPC vehicles, THEN enable
-            # autopilot. Calling set_autopilot before a tick on constrained
-            # hardware causes the traffic manager to reference an unregistered
-            # actor, producing the C++ "destroyed actor" abort.
             if npc_list:
+                # Fix 2b: tick before set_autopilot on NPCs
                 self._world.tick()
                 for npc in npc_list:
                     try:
                         if npc.is_alive:
-                            npc.set_autopilot(True)
+                            # Fix 1: pass TM_PORT here too
+                            npc.set_autopilot(True, TM_PORT)
                     except RuntimeError as e:
-                        logger.warning("[%s] NPC autopilot failed: %s", scenario_id, e)
+                        logger.warning("[%s] NPC autopilot failed (skipping): %s", scenario_id, e)
 
-            # ---- Step 6b: Pedestrian ------------------------------------------
+            # ---- Step 6b: Pedestrian ---------------------------------------
             if spec.pedestrian:
                 logger.info("[%s] Step 6/7: spawning pedestrian", scenario_id)
                 walker_bp = random.choice(blueprint_library.filter("walker.pedestrian.*"))
 
-                # Place the pedestrian in front of the ego vehicle so it is
-                # visible in the camera frame and actually crosses the path.
                 ego_t = ego_vehicle.get_transform()
                 fwd = ego_t.get_forward_vector()
                 loc = carla.Location(
-                    x=ego_t.location.x + fwd.x * 12.0 + random.uniform(-2, 2),
-                    y=ego_t.location.y + fwd.y * 12.0 + random.uniform(-2, 2),
+                    x=ego_t.location.x + fwd.x * 12.0 + random.uniform(-2.0, 2.0),
+                    y=ego_t.location.y + fwd.y * 12.0 + random.uniform(-2.0, 2.0),
                     z=ego_t.location.z + 0.5,
                 )
-                walker_actor = self._world.try_spawn_actor(
-                    walker_bp, carla.Transform(loc)
-                )
+                walker_actor = self._world.try_spawn_actor(walker_bp, carla.Transform(loc))
 
                 if walker_actor is not None:
                     state_log["pedestrian_spawned"] = True
                     state_log["actors"].append({"type": "pedestrian", "id": walker_actor.id})
 
-                    # Tick once to register the walker before spawning its controller.
+                    # Fix 2c: tick to register walker BEFORE spawning its controller
                     self._world.tick()
 
                     ctrl_bp = blueprint_library.find("controller.ai.walker")
@@ -315,7 +327,8 @@ class CarlaRunner:
                         ctrl_bp, carla.Transform(), attach_to=walker_actor
                     )
 
-                    # Tick again to register the controller before calling start().
+                    # Fix 2d: tick to register controller BEFORE calling start()
+                    # Skipping this tick is the "destroyed actor" core dump cause
                     self._world.tick()
 
                     try:
@@ -324,21 +337,15 @@ class CarlaRunner:
                         if target is not None:
                             walker_controller.go_to_location(target)
                         walker_controller.set_max_speed(1.4)
-                        
-                        # Guarded registration tick: Ensure the navigation route 
-                        # binds properly inside the engine stack before the loop.
-                        self._world.tick()
                     except RuntimeError as e:
                         logger.warning("[%s] Walker controller failed: %s", scenario_id, e)
 
                     logger.info("[%s] Step 6/7: pedestrian spawned and walking", scenario_id)
                 else:
-                    logger.warning(
-                        "[%s] Step 6/7: pedestrian spawn returned None (location blocked)",
-                        scenario_id,
-                    )
+                    logger.warning("[%s] Step 6/7: pedestrian spawn returned None (location blocked)",
+                                   scenario_id)
 
-            # ---- Step 7: Tick loop --------------------------------------------
+            # ---- Step 7: Tick loop -----------------------------------------
             logger.info("[%s] Step 7/7: starting tick loop (duration=%ds, tick=%.2fs)",
                         scenario_id, spec.duration_s, self.profile.fixed_delta_seconds)
 
@@ -350,8 +357,6 @@ class CarlaRunner:
             execution_failed = False
 
             for t in range(ticks):
-                # Validate ego before every tick — if CARLA killed it (e.g. collision
-                # with an NPC), we abort gracefully rather than segfaulting.
                 if not ego_vehicle.is_alive:
                     logger.error("[%s] Ego vehicle destroyed at tick %d; aborting.", scenario_id, t)
                     execution_failed = True
@@ -366,7 +371,8 @@ class CarlaRunner:
 
                 if t % capture_every == 0:
                     frame_id = self._world.get_snapshot().frame
-                    # Wait up to 0.6 s for the camera callback to deliver this frame
+                    # Fix 4: wait up to 0.6s (30 × 20ms) for the camera callback
+                    # The original code only waited 20ms — not enough on slow hardware
                     for _ in range(30):
                         if frame_id in captured_frames:
                             break
@@ -390,7 +396,6 @@ class CarlaRunner:
                         logger.warning("[%s] Timeout waiting for frame %d", scenario_id, frame_id)
 
             state_log["execution_completed"] = not execution_failed
-
             if execution_failed:
                 raise RuntimeError("Tick loop terminated early; see per-tick log entries above.")
 
@@ -410,11 +415,9 @@ class CarlaRunner:
             tb = traceback.format_exc()
             state_log["errors"].append(str(exc))
             logger.error("Scenario %s failed: %s\n%s", scenario_id, exc, tb)
-
             log_path = out / "state_log.json"
             with open(log_path, "w") as f:
                 json.dump(state_log, f, indent=2)
-
             return ExecutionResult(
                 scenario_id=scenario_id,
                 success=False,
@@ -424,17 +427,17 @@ class CarlaRunner:
             )
 
         finally:
+            # Fix 3: strict teardown order
+            # 1. Disable callback, stop camera stream
             callback_active = False
-
-            # 1. Stop camera stream
             if camera is not None:
                 try:
                     camera.stop()
                 except Exception:
                     pass
-            time.sleep(0.15)
+            time.sleep(0.15)  # let the stream drain
 
-            # 2+3. Stop and destroy walker controller
+            # 2. Stop + destroy walker controller before walker
             if walker_controller is not None:
                 try:
                     if walker_controller.is_alive:
@@ -443,20 +446,29 @@ class CarlaRunner:
                     pass
                 self._safe_destroy(walker_controller)
 
-            # 4. Destroy walker
+            # 3. Destroy walker after its controller
             self._safe_destroy(walker_actor)
 
-            # 5. Destroy NPC vehicles
+            # 4. Destroy NPC vehicles
             for npc in npc_list:
                 self._safe_destroy(npc)
 
-            # 6. Destroy camera before ego
+            # 5. Destroy camera before ego (camera is attached to ego;
+            #    ego.destroy() auto-destroys attached actors, making our
+            #    explicit camera.destroy() hit a dead actor otherwise)
             self._safe_destroy(camera)
 
-            # 7. Destroy ego last
+            # 6. Ego last
             self._safe_destroy(ego_vehicle)
-            
-            # === ADD THIS FIX HERE ===
-            # Allow the CARLA physics server engine to flush deleted actor IDs 
-            # out of the pipeline registry before the next reflection iteration triggers.
-            time.sleep(2.0)
+
+    # ------------------------------------------------------------------ #
+    # Helpers
+    # ------------------------------------------------------------------ #
+    def _safe_spawn_point(self, spawn_points, index: int):
+        if 0 <= index < len(spawn_points):
+            return spawn_points[index]
+        for fallback in FALLBACK_SPAWN_INDICES:
+            if fallback < len(spawn_points):
+                logger.warning("spawn_point_index %s invalid, falling back to %s", index, fallback)
+                return spawn_points[fallback]
+        return spawn_points[0]

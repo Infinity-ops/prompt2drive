@@ -1,25 +1,52 @@
 """
 run_scenario.py
 
-Single-scenario CLI entry point -- the fastest way to try Prompt-to-Drive
-on your own prompt against a locally running CARLA server.
+Single-scenario CLI entry point for Prompt-to-Drive.
 
-Usage:
-    python run_scenario.py --prompt "A pedestrian crosses near a junction in rain" \\
-        --scenario-id demo01 --mode full
+Usage examples
+--------------
 
-    # Low VRAM systems (avoid crashes on small machines):
-    python run_scenario.py --prompt "A pedestrian crosses near a junction in rain" \\
-        --hardware-profile low_vram_2gb
+# Using local Qwen2.5-VL served by vLLM (YOUR SETUP):
+python run_scenario.py \\
+    --prompt "A pedestrian suddenly crosses near a traffic signal in rainy weather" \\
+    --hardware-profile low_vram_2gb_signals \\
+    --backend local \\
+    --mode full
 
-Requires:
-    - A running CARLA server (see README "Prerequisites")
-    - OPENAI_API_KEY set in your environment or .env file
+# Using HuggingFace cloud models:
+python run_scenario.py \\
+    --prompt "A pedestrian suddenly crosses near a traffic signal in rainy weather" \\
+    --hardware-profile low_vram_2gb_signals \\
+    --backend huggingface \\
+    --mode full
 
-Hardware Profiles:
-    - high_performance: Unrestricted town selection (4GB+ VRAM)
-    - standard: Mid-range systems (2-4GB VRAM) 
-    - low_vram_2gb: Constrained systems - restricts to Town01/Town02 only
+# Full evaluation run (all scenarios):
+python -m eval.run_full_evaluation \\
+    --dataset scenarios/dataset.json \\
+    --mode full \\
+    --out outputs/full \\
+    --backend local \\
+    --hardware-profile low_vram_2gb_signals
+
+# Then compute metrics:
+python -m eval.compute_metrics \\
+    --full-dir outputs/full \\
+    --generator-only-dir outputs/generator_only \\
+    --baseline-dir outputs/baseline \\
+    --out outputs/metrics.json
+
+Environment variables (set in .env or shell)
+--------------------------------------------
+# For --backend local (vLLM):
+VLLM_BASE_URL=http://localhost:8000/v1          # default
+VLLM_VISION_MODEL=Qwen/Qwen2.5-VL-7B-Instruct  # default
+VLLM_TEXT_MODEL=Qwen/Qwen2.5-VL-7B-Instruct    # default (same model)
+
+# For --backend huggingface:
+HF_TOKEN=hf_...
+
+# For --backend openai:
+OPENAI_API_KEY=sk-...
 """
 from __future__ import annotations
 
@@ -51,26 +78,39 @@ def main():
         "--hardware-profile",
         choices=["high_performance", "standard", "low_vram_2gb", "low_vram_2gb_signals"],
         default=None,
-        help="Hardware constraints for town selection. "
-        "'low_vram_2gb' restricts to Town01/Town02 to avoid OOM.",
+        help="Hardware constraints for town selection and camera resolution. "
+             "'low_vram_2gb_signals' restricts to Town01 for 2GB VRAM machines.",
     )
     parser.add_argument(
         "--backend",
-        choices=["openai", "huggingface"],
+        choices=["openai", "huggingface", "local"],
         default="openai",
-        help="LLM backend used for generation and verification.",
+        help=(
+            "LLM backend for generation and verification.\n"
+            "  openai      -- GPT-4o (requires OPENAI_API_KEY)\n"
+            "  huggingface -- HF Inference API (requires HF_TOKEN)\n"
+            "  local       -- locally served vLLM (Qwen2.5-VL at localhost:8000)\n"
+            "                 Start with: vllm serve ~/models/Qwen2.5-VL-7B-Instruct \\\n"
+            "                                 --dtype float16 --max-model-len 8192"
+        ),
     )
     args = parser.parse_args()
 
+    # Validate credentials per backend
     if args.backend == "openai" and not os.getenv("OPENAI_API_KEY"):
         raise SystemExit(
-            "OPENAI_API_KEY is not set. Create a .env file or export it before running."
+            "OPENAI_API_KEY is not set. Add it to your .env file or export it."
         )
-
-    if args.backend == "huggingface" and not os.getenv("HF_TOKEN"):
+    if args.backend == "huggingface" and not (
+        os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_API_TOKEN")
+    ):
         raise SystemExit(
-            "HF_TOKEN is not set. Create a .env file or export it before running."
+            "HF_TOKEN is not set. Add it to your .env file or export it.\n"
+            "Generate one at https://huggingface.co/settings/tokens"
         )
+    if args.backend == "local":
+        base_url = os.getenv("VLLM_BASE_URL", "http://localhost:8000/v1")
+        logger.info("Using local vLLM backend at %s", base_url)
 
     runner = CarlaRunner(
         host=args.carla_host,
