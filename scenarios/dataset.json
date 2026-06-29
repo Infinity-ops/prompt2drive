@@ -1,166 +1,286 @@
 {
   "dataset_version": "1.0",
-  "description": "20-scenario evaluation set for Prompt-to-Drive. Covers 5 weather types x 6 event types x 3 difficulty levels. Ground truth labels were established by two independent human raters inspecting rendered simulation frames (see paper Section 4.1).",
+  "description": "20-scenario natural-language benchmark for Prompt-to-Drive. Spans 5 weather conditions (clear, rain, fog, night, cloudy), 6 driving event types (crossing, lane_change, emergency_brake, red_light_violation, obstruction, overtaking), and 3 difficulty levels (easy, medium, hard). Designed to stress-test Generator fidelity, Verifier predicate coverage, and Reflector recovery across semantically diverse scenarios.",
   "scenarios": [
     {
       "id": "s01",
-      "prompt": "A pedestrian suddenly crosses near a traffic signal in rainy weather.",
+      "prompt": "A pedestrian suddenly crosses the road near a traffic signal in rainy weather.",
       "difficulty": "easy",
       "expected_weather": "rain",
+      "expected_event": "crossing",
       "expected_actors": ["pedestrian"],
-      "expected_event": "crossing"
+      "ground_truth_predicates": {
+        "weather_correct": true,
+        "pedestrian_present": true,
+        "vehicles_present": true,
+        "event_observable": true
+      }
     },
     {
       "id": "s02",
-      "prompt": "Sudden lane change to avoid a parked vehicle on a sunny highway.",
+      "prompt": "A vehicle makes a sudden lane change on a clear sunny highway to avoid a slow truck.",
       "difficulty": "easy",
       "expected_weather": "clear",
-      "expected_actors": ["vehicle"],
-      "expected_event": "lane_change"
+      "expected_event": "lane_change",
+      "expected_actors": ["vehicles"],
+      "ground_truth_predicates": {
+        "weather_correct": true,
+        "pedestrian_present": false,
+        "vehicles_present": true,
+        "event_observable": true
+      }
     },
     {
       "id": "s03",
-      "prompt": "A cyclist runs a red light in foggy conditions at a busy junction.",
+      "prompt": "A cyclist runs a red light at a busy intersection in foggy conditions.",
       "difficulty": "medium",
       "expected_weather": "fog",
-      "expected_actors": ["cyclist"],
-      "expected_event": "red_light_violation"
+      "expected_event": "red_light_violation",
+      "expected_actors": ["cyclist", "vehicles"],
+      "ground_truth_predicates": {
+        "weather_correct": true,
+        "pedestrian_present": false,
+        "vehicles_present": true,
+        "event_observable": true
+      }
     },
     {
       "id": "s04",
-      "prompt": "Emergency braking required when a vehicle ahead stops abruptly at night.",
+      "prompt": "The ego vehicle performs an emergency brake at night when a pedestrian steps off the curb.",
       "difficulty": "medium",
       "expected_weather": "night",
-      "expected_actors": ["vehicle"],
-      "expected_event": "emergency_brake"
+      "expected_event": "emergency_brake",
+      "expected_actors": ["pedestrian"],
+      "ground_truth_predicates": {
+        "weather_correct": true,
+        "pedestrian_present": true,
+        "vehicles_present": false,
+        "event_observable": true
+      }
     },
     {
       "id": "s05",
-      "prompt": "A parked vehicle obstructs the lane on a cloudy day, forcing a detour.",
+      "prompt": "A stopped vehicle is blocking the left lane on a cloudy day, forcing the ego to merge right.",
       "difficulty": "easy",
       "expected_weather": "cloudy",
-      "expected_actors": ["vehicle"],
-      "expected_event": "obstruction"
+      "expected_event": "obstruction",
+      "expected_actors": ["vehicles"],
+      "ground_truth_predicates": {
+        "weather_correct": true,
+        "pedestrian_present": false,
+        "vehicles_present": true,
+        "event_observable": true
+      }
     },
     {
       "id": "s06",
-      "prompt": "Overtaking a slow-moving truck on a clear rural road.",
-      "difficulty": "easy",
-      "expected_weather": "clear",
-      "expected_actors": ["vehicle"],
-      "expected_event": "overtaking"
+      "prompt": "Two pedestrians suddenly cross near a traffic signal in heavy rain at a signalized junction.",
+      "difficulty": "medium",
+      "expected_weather": "rain",
+      "expected_event": "crossing",
+      "expected_actors": ["pedestrian", "vehicles"],
+      "ground_truth_predicates": {
+        "weather_correct": true,
+        "pedestrian_present": true,
+        "vehicles_present": true,
+        "event_observable": true
+      }
     },
     {
       "id": "s07",
-      "prompt": "A pedestrian crosses at an unmarked junction during heavy rain at night.",
-      "difficulty": "hard",
-      "expected_weather": "rain",
-      "expected_actors": ["pedestrian"],
-      "expected_event": "crossing"
+      "prompt": "A vehicle overtakes the ego car aggressively on a clear road with oncoming traffic.",
+      "difficulty": "medium",
+      "expected_weather": "clear",
+      "expected_event": "overtaking",
+      "expected_actors": ["vehicles"],
+      "ground_truth_predicates": {
+        "weather_correct": true,
+        "pedestrian_present": false,
+        "vehicles_present": true,
+        "event_observable": true
+      }
     },
     {
       "id": "s08",
-      "prompt": "A cyclist swerves into traffic suddenly in dense fog with low visibility.",
+      "prompt": "In dense fog, an NPC vehicle runs a red light at a four-way intersection with heavy cross traffic.",
       "difficulty": "hard",
       "expected_weather": "fog",
-      "expected_actors": ["cyclist"],
-      "expected_event": "lane_change"
+      "expected_event": "red_light_violation",
+      "expected_actors": ["vehicles"],
+      "ground_truth_predicates": {
+        "weather_correct": true,
+        "pedestrian_present": false,
+        "vehicles_present": true,
+        "event_observable": true
+      }
     },
     {
       "id": "s09",
-      "prompt": "Emergency brake test in rainy conditions with heavy traffic density.",
-      "difficulty": "medium",
-      "expected_weather": "rain",
-      "expected_actors": ["vehicle"],
-      "expected_event": "emergency_brake"
+      "prompt": "At night, a pedestrian wearing dark clothing crosses at an unmarked mid-block location.",
+      "difficulty": "hard",
+      "expected_weather": "night",
+      "expected_event": "crossing",
+      "expected_actors": ["pedestrian"],
+      "ground_truth_predicates": {
+        "weather_correct": true,
+        "pedestrian_present": true,
+        "vehicles_present": false,
+        "event_observable": true
+      }
     },
     {
       "id": "s10",
-      "prompt": "A vehicle runs a red light at a signalized intersection in clear daylight.",
+      "prompt": "On a rainy urban road, a delivery van double-parks and blocks the through lane.",
       "difficulty": "easy",
-      "expected_weather": "clear",
-      "expected_actors": ["vehicle"],
-      "expected_event": "red_light_violation"
+      "expected_weather": "rain",
+      "expected_event": "obstruction",
+      "expected_actors": ["vehicles"],
+      "ground_truth_predicates": {
+        "weather_correct": true,
+        "pedestrian_present": false,
+        "vehicles_present": true,
+        "event_observable": true
+      }
     },
     {
       "id": "s11",
-      "prompt": "Pedestrian crossing near a school zone junction on a cloudy afternoon.",
+      "prompt": "A vehicle cuts across two lanes at high speed on a clear multi-lane road near a junction.",
       "difficulty": "medium",
-      "expected_weather": "cloudy",
-      "expected_actors": ["pedestrian"],
-      "expected_event": "crossing"
+      "expected_weather": "clear",
+      "expected_event": "lane_change",
+      "expected_actors": ["vehicles"],
+      "ground_truth_predicates": {
+        "weather_correct": true,
+        "pedestrian_present": false,
+        "vehicles_present": true,
+        "event_observable": true
+      }
     },
     {
       "id": "s12",
-      "prompt": "A delivery vehicle obstructs a lane at night, requiring nearby traffic to merge.",
-      "difficulty": "medium",
-      "expected_weather": "night",
-      "expected_actors": ["vehicle"],
-      "expected_event": "obstruction"
+      "prompt": "In rainy weather with poor visibility, the lead vehicle brakes suddenly causing a near-rear-end collision.",
+      "difficulty": "hard",
+      "expected_weather": "rain",
+      "expected_event": "emergency_brake",
+      "expected_actors": ["vehicles"],
+      "ground_truth_predicates": {
+        "weather_correct": true,
+        "pedestrian_present": false,
+        "vehicles_present": true,
+        "event_observable": true
+      }
     },
     {
       "id": "s13",
-      "prompt": "Overtaking maneuver on a foggy two-lane road with oncoming traffic risk.",
-      "difficulty": "hard",
-      "expected_weather": "fog",
-      "expected_actors": ["vehicle"],
-      "expected_event": "overtaking"
+      "prompt": "A group of pedestrians crosses a busy cloudy-day intersection ignoring the walk signal timing.",
+      "difficulty": "medium",
+      "expected_weather": "cloudy",
+      "expected_event": "crossing",
+      "expected_actors": ["pedestrian", "vehicles"],
+      "ground_truth_predicates": {
+        "weather_correct": true,
+        "pedestrian_present": true,
+        "vehicles_present": true,
+        "event_observable": true
+      }
     },
     {
       "id": "s14",
-      "prompt": "A cyclist crosses an intersection just as the light changes, in clear weather.",
-      "difficulty": "easy",
-      "expected_weather": "clear",
-      "expected_actors": ["cyclist"],
-      "expected_event": "crossing"
+      "prompt": "An emergency vehicle overtakes slow traffic on a rainy arterial road using the oncoming lane.",
+      "difficulty": "medium",
+      "expected_weather": "rain",
+      "expected_event": "overtaking",
+      "expected_actors": ["vehicles"],
+      "ground_truth_predicates": {
+        "weather_correct": true,
+        "pedestrian_present": false,
+        "vehicles_present": true,
+        "event_observable": true
+      }
     },
     {
       "id": "s15",
-      "prompt": "Sudden lane change due to debris on a rainy highway at night.",
+      "prompt": "At night, a vehicle stalls in the middle of the road causing following vehicles to brake hard.",
       "difficulty": "hard",
-      "expected_weather": "rain",
-      "expected_actors": ["vehicle"],
-      "expected_event": "lane_change"
+      "expected_weather": "night",
+      "expected_event": "obstruction",
+      "expected_actors": ["vehicles"],
+      "ground_truth_predicates": {
+        "weather_correct": true,
+        "pedestrian_present": false,
+        "vehicles_present": true,
+        "event_observable": true
+      }
     },
     {
       "id": "s16",
-      "prompt": "A pedestrian darts between parked cars into the road in clear daylight.",
-      "difficulty": "medium",
+      "prompt": "In clear weather, a child runs into the road from between parked cars at a residential street.",
+      "difficulty": "easy",
       "expected_weather": "clear",
+      "expected_event": "crossing",
       "expected_actors": ["pedestrian"],
-      "expected_event": "crossing"
+      "ground_truth_predicates": {
+        "weather_correct": true,
+        "pedestrian_present": true,
+        "vehicles_present": false,
+        "event_observable": true
+      }
     },
     {
       "id": "s17",
-      "prompt": "Emergency braking when a cyclist swerves in front of the ego vehicle, foggy morning.",
-      "difficulty": "hard",
-      "expected_weather": "fog",
-      "expected_actors": ["cyclist"],
-      "expected_event": "emergency_brake"
+      "prompt": "A motorcyclist weaves dangerously between lanes on a cloudy motorway with moderate traffic.",
+      "difficulty": "medium",
+      "expected_weather": "cloudy",
+      "expected_event": "lane_change",
+      "expected_actors": ["vehicles"],
+      "ground_truth_predicates": {
+        "weather_correct": true,
+        "pedestrian_present": false,
+        "vehicles_present": true,
+        "event_observable": true
+      }
     },
     {
       "id": "s18",
-      "prompt": "A vehicle blocks an intersection after running a red light on a cloudy day.",
-      "difficulty": "medium",
-      "expected_weather": "cloudy",
-      "expected_actors": ["vehicle"],
-      "expected_event": "red_light_violation"
+      "prompt": "Dense fog causes a multi-vehicle pile-up scenario on a dual carriageway as vehicles brake suddenly.",
+      "difficulty": "hard",
+      "expected_weather": "fog",
+      "expected_event": "emergency_brake",
+      "expected_actors": ["vehicles"],
+      "ground_truth_predicates": {
+        "weather_correct": true,
+        "pedestrian_present": false,
+        "vehicles_present": true,
+        "event_observable": true
+      }
     },
     {
       "id": "s19",
-      "prompt": "Overtaking a cyclist on a narrow road at night with oncoming headlights.",
+      "prompt": "On a rainy night, a pedestrian with an umbrella crosses slowly in front of a taxi at a zebra crossing.",
       "difficulty": "hard",
-      "expected_weather": "night",
-      "expected_actors": ["cyclist", "vehicle"],
-      "expected_event": "overtaking"
+      "expected_weather": "rain",
+      "expected_event": "crossing",
+      "expected_actors": ["pedestrian", "vehicles"],
+      "ground_truth_predicates": {
+        "weather_correct": true,
+        "pedestrian_present": true,
+        "vehicles_present": true,
+        "event_observable": true
+      }
     },
     {
       "id": "s20",
-      "prompt": "A stalled vehicle obstructs a junction approach during light rain.",
-      "difficulty": "easy",
-      "expected_weather": "rain",
-      "expected_actors": ["vehicle"],
-      "expected_event": "obstruction"
+      "prompt": "A vehicle runs a red light on a clear day at a four-way intersection with moderate pedestrian and vehicle traffic.",
+      "difficulty": "medium",
+      "expected_weather": "clear",
+      "expected_event": "red_light_violation",
+      "expected_actors": ["vehicles"],
+      "ground_truth_predicates": {
+        "weather_correct": true,
+        "pedestrian_present": false,
+        "vehicles_present": true,
+        "event_observable": true
+      }
     }
   ]
 }
