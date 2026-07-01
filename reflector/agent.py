@@ -13,7 +13,8 @@ that were already verified correct.
 from __future__ import annotations
 
 import logging
-
+from typing import Optional
+from backends.llm_backend import TextBackend
 from verifier.agent import HybridVerificationResult
 
 logger = logging.getLogger("prompt_to_drive.reflector")
@@ -84,6 +85,7 @@ def reflect(
     verification_result: HybridVerificationResult,
     iteration: int,
     preferred_towns: tuple[str, ...] | None = None,
+    backend: Optional[TextBackend] = None,
 ) -> str:
     """
     Build a refinement_context string to prepend to the next Generator
@@ -130,6 +132,7 @@ missing-element list, since it was already verified as correct.
 Fields most likely needing adjustment: {", ".join(affected_fields)}.""".strip()
 
     logger.info(
-        "Reflector iteration %s: score=%.2f missing=%s", iteration, score, missing
+        "Reflector iteration %s: score=%.2f missing=%s using backend=%s", 
+        iteration, score, missing, backend.name if backend else "default"
     )
     return context

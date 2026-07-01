@@ -2,24 +2,7 @@
 backends/llm_backend.py
 
 Provider-agnostic backend abstraction for Prompt-to-Drive.
-
-Three concrete backends:
-
-  OpenAIBackend      -- GPT-4o via OpenAI API (paid, structured outputs)
-  HFBackend          -- HuggingFace Inference API (free/PRO, cloud-hosted)
-  LocalVLLMBackend   -- locally served model via vLLM (YOUR SETUP)
-                        Text:   meta-llama/Meta-Llama-3.1-8B-Instruct (or any text model)
-                        Vision: Qwen/Qwen2.5-VL-7B-Instruct served at localhost:8000
-
-To use your local Qwen2.5-VL, run:
-    vllm serve ~/models/Qwen2.5-VL-7B-Instruct --dtype float16 --max-model-len 8192
-
-Then either:
-    python run_scenario.py --backend local ...
-or set in .env:
-    VLLM_BASE_URL=http://localhost:8000/v1
-    VLLM_VISION_MODEL=Qwen/Qwen2.5-VL-7B-Instruct
-    VLLM_TEXT_MODEL=Qwen/Qwen2.5-VL-7B-Instruct   # can double as text model too
+Dynamic version: Completely driven by model strings and parameters specified in your .env file.
 """
 from __future__ import annotations
 
@@ -66,11 +49,24 @@ class VisionBackend(abc.ABC):
 class OpenAIBackend(TextBackend, VisionBackend):
     name = "openai"
 
-    def __init__(self, text_model: str = "gpt-4o-2024-08-06", vision_model: str = "gpt-4o"):
+    def __init__(self, text_model: Optional[str] = None, vision_model: Optional[str] = None):
         from openai import OpenAI
-        self.client = OpenAI()
-        self.text_model = text_model
-        self.vision_model = vision_model
+        
+        self.text_model = text_model or os.getenv("OPENAI_TEXT_MODEL")
+        self.vision_model = vision_model or os.getenv("OPENAI_VISION_MODEL")
+        
+        if not self.text_model:
+            raise ValueError("OPENAI_TEXT_MODEL is missing. Provide it via initialization or set it in your .env file.")
+        if not self.vision_model:
+            raise ValueError("OPENAI_VISION_MODEL is missing. Provide it via initialization or set it in your .env file.")
+        
+        api_key = os.getenv("OPENAI_API_KEY")
+        base_url = os.getenv("OPENAI_API_BASE") or os.getenv("OPENAI_BASE_URL")
+        
+        if not api_key:
+            logger.warning("OPENAI_API_KEY not found in environment variables.")
+
+        self.client = OpenAI(api_key=api_key, base_url=base_url)
 
     def generate_structured(self, system_prompt: str, user_prompt: str, schema: Type[T]) -> T:
         response = self.client.beta.chat.completions.parse(
@@ -144,10 +140,6 @@ def _scenario_spec_hint() -> dict:
 # HuggingFace cloud backend
 # --------------------------------------------------------------------- #
 class HFBackend(TextBackend, VisionBackend):
-    """
-    Uses the HuggingFace Inference API (cloud-hosted models).
-    Reads HF_TOKEN first, then HUGGINGFACE_API_TOKEN (legacy).
-    """
     name = "huggingface"
 
     def __init__(
@@ -158,26 +150,28 @@ class HFBackend(TextBackend, VisionBackend):
     ):
         from huggingface_hub import InferenceClient
 
-        self.text_model = text_model or os.getenv(
-            "HF_TEXT_MODEL", "meta-llama/Meta-Llama-3.1-8B-Instruct"
-        )
-        self.vision_model = vision_model or os.getenv(
-            "HF_VISION_MODEL", "Qwen/Qwen2.5-VL-7B-Instruct"
-        )
-        # Accept both HF_TOKEN (standard HF CLI var) and legacy HUGGINGFACE_API_TOKEN
-        self.token = (
-            token
-            or os.getenv("HF_TOKEN")
-            or os.getenv("HUGGINGFACE_API_TOKEN")
-        )
+        self.text_model = text_model or os.getenv("HF_TEXT_MODEL")
+        self.vision_model = vision_model or os.getenv("HF_VISION_MODEL")
+        
+        if not self.text_model:
+            raise ValueError("HF_TEXT_MODEL is missing. Set it in your .env file (e.g., HF_TEXT_MODEL=\"Qwen/Qwen2.5-7B-Instruct\").")
+        if not self.vision_model:
+            raise ValueError("HF_VISION_MODEL is missing. Set it in your .env file (e.g., HF_VISION_MODEL=\"Qwen/Qwen2.5-VL-7B-Instruct\").")
+        
+        self.token = token or os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_API_TOKEN")
         if not self.token:
-            raise ValueError(
-                "No HuggingFace token found. Set HF_TOKEN in your .env file. "
-                "Generate one at https://huggingface.co/settings/tokens"
-            )
-        # Do NOT bind model= to the client constructor — the HF router
-        # resolves provider at call time from the model= in each call.
+            raise ValueError("No HuggingFace token found. Please define HF_TOKEN in your .env file.")
+            
         self._client = InferenceClient(token=self.token)
+        
+        # Route to local server if hybrid system split is explicitly active
+        self.local_vision_url = os.getenv("P2D_VISION_URL")
+        if self.local_vision_url:
+            from openai import OpenAI
+            self._local_vision_client = OpenAI(base_url=self.local_vision_url, api_key="local")
+            logger.info("HFBackend routing vision frames locally to: %s", self.local_vision_url)
+        else:
+            self._local_vision_client = None
 
     def generate_structured(self, system_prompt: str, user_prompt: str, schema: Type[T]) -> T:
         schema_hint = json.dumps(_scenario_spec_hint() if schema.__name__ == "ScenarioSpec"
@@ -209,6 +203,18 @@ class HFBackend(TextBackend, VisionBackend):
 
     def verify_frames(self, prompt_text: str, frame_paths: list[str]) -> dict:
         content = [{"type": "text", "text": prompt_text}]
+        
+        if self._local_vision_client is not None:
+            for fp in frame_paths[:3]:
+                content.append({"type": "image_url", "image_url": {"url": _encode_frame_b64(fp)}})
+            raw = self._local_vision_client.chat.completions.create(
+                model=self.vision_model,
+                messages=[{"role": "user", "content": content}],
+                max_tokens=600,
+                temperature=0.0,
+            )
+            return _parse_json_block(raw.choices[0].message.content)
+            
         for fp in frame_paths:
             content.append({"type": "image_url", "image_url": {"url": _encode_frame_b64(fp)}})
         raw = self._client.chat_completion(
@@ -221,26 +227,9 @@ class HFBackend(TextBackend, VisionBackend):
 
 
 # --------------------------------------------------------------------- #
-# Local vLLM backend  ← YOUR SETUP
+# Local vLLM backend
 # --------------------------------------------------------------------- #
 class LocalVLLMBackend(TextBackend, VisionBackend):
-    """
-    Points at a locally running vLLM server (OpenAI-compatible API).
-
-    Start your server with:
-        vllm serve ~/models/Qwen2.5-VL-7B-Instruct \\
-            --dtype float16 \\
-            --max-model-len 8192
-
-    Then use --backend local when running run_scenario.py.
-
-    The same Qwen2.5-VL model handles BOTH text generation (Generator)
-    and vision verification (Verifier) — it's a vision-language model,
-    so it can do both. You can override with env vars if you want a
-    separate text-only model:
-        VLLM_TEXT_MODEL=<model-name>   # defaults to vision model
-        VLLM_BASE_URL=http://localhost:8000/v1
-    """
     name = "local"
 
     def __init__(
@@ -252,29 +241,16 @@ class LocalVLLMBackend(TextBackend, VisionBackend):
         from openai import OpenAI
 
         self.base_url = base_url or os.getenv("VLLM_BASE_URL", "http://localhost:8000/v1")
+        self.vision_model = vision_model or os.getenv("VLLM_VISION_MODEL")
+        self.text_model = text_model or os.getenv("VLLM_TEXT_MODEL") or self.vision_model
 
-        # The vision model name must match exactly what vLLM reports.
-        # vLLM uses the last path component of the model directory by default.
-        self.vision_model = (
-            vision_model
-            or os.getenv("VLLM_VISION_MODEL", "./Qwen2.5-VL-7B-Instruct")
-        )
-        # Text model defaults to the same vision model (Qwen2.5-VL handles both)
-        self.text_model = (
-            text_model
-            or os.getenv("VLLM_TEXT_MODEL", self.vision_model)
-        )
+        if not self.vision_model:
+            raise ValueError("VLLM_VISION_MODEL is missing. Set it to your local vLLM model name inside your .env file.")
+        if not self.text_model:
+            raise ValueError("VLLM_TEXT_MODEL is missing. Set it inside your .env file.")
 
-        # vLLM's OpenAI-compatible server does not check the api_key,
-        # but the openai client requires a non-empty string.
-        self._client = OpenAI(
-            base_url=self.base_url,
-            api_key="local",        # any non-empty string works
-        )
-        logger.info(
-            "LocalVLLMBackend initialised: base_url=%s vision=%s text=%s",
-            self.base_url, self.vision_model, self.text_model,
-        )
+        self._client = OpenAI(base_url=self.base_url, api_key="local")
+        logger.info("LocalVLLMBackend connected: url=%s vision=%s text=%s", self.base_url, self.vision_model, self.text_model)
 
     def generate_structured(self, system_prompt: str, user_prompt: str, schema: Type[T]) -> T:
         schema_hint = json.dumps(_scenario_spec_hint() if schema.__name__ == "ScenarioSpec"
@@ -290,8 +266,7 @@ class LocalVLLMBackend(TextBackend, VisionBackend):
             max_tokens=512,
             temperature=0.2,
         )
-        text = response.choices[0].message.content
-        return schema(**_parse_json_block(text))
+        return schema(**_parse_json_block(response.choices[0].message.content))
 
     def generate_text(self, system_prompt: str, user_prompt: str) -> str:
         response = self._client.chat.completions.create(
@@ -306,19 +281,9 @@ class LocalVLLMBackend(TextBackend, VisionBackend):
         return response.choices[0].message.content
 
     def verify_frames(self, prompt_text: str, frame_paths: list[str]) -> dict:
-        """
-        Send frames to the local Qwen2.5-VL model.
-        Qwen2.5-VL supports base64 image_url content blocks via the
-        OpenAI-compatible API that vLLM exposes.
-        We cap at 3 frames to stay well within the 8192-token context window.
-        """
         content: list[dict] = [{"type": "text", "text": prompt_text}]
-        # On 2GB VRAM, limit to 3 frames max to avoid OOM in the VLM forward pass
         for fp in frame_paths[:3]:
-            content.append({
-                "type": "image_url",
-                "image_url": {"url": _encode_frame_b64(fp)},
-            })
+            content.append({"type": "image_url", "image_url": {"url": _encode_frame_b64(fp)}})
 
         response = self._client.chat.completions.create(
             model=self.vision_model,
@@ -330,17 +295,15 @@ class LocalVLLMBackend(TextBackend, VisionBackend):
 
 
 # --------------------------------------------------------------------- #
-# Shared helpers
+# Shared helpers & Factories
 # --------------------------------------------------------------------- #
 def _encode_frame_b64(frame_path: str) -> str:
-    """Returns a data URI string suitable for image_url content blocks."""
     with open(frame_path, "rb") as f:
         b64 = base64.b64encode(f.read()).decode("utf-8")
     return f"data:image/png;base64,{b64}"
 
 
 def _parse_json_block(raw: str) -> dict:
-    """Strips markdown fences and parses JSON, with one repair attempt."""
     cleaned = raw.replace("```json", "").replace("```", "").strip()
     try:
         return json.loads(cleaned)
@@ -351,21 +314,30 @@ def _parse_json_block(raw: str) -> dict:
                 return json.loads(cleaned[start: end + 1])
             except json.JSONDecodeError:
                 pass
-        logger.error("Failed to parse JSON from backend output: %s", cleaned[:300])
+        logger.error("Failed to parse JSON block: %s", cleaned[:300])
         raise
 
 
-def get_backend(name: str) -> "OpenAIBackend | HFBackend | LocalVLLMBackend":
-    """
-    Factory. Valid names: 'openai', 'huggingface' / 'hf', 'local' / 'vllm'.
-    """
+def get_text_backend(name: str) -> TextBackend:
     name = name.lower()
-    if name in {"openai", "gpt", "gpt-4o"}:
-        return OpenAIBackend()
-    if name in {"huggingface", "hf"}:
-        return HFBackend()
-    if name in {"local", "vllm", "local_vllm"}:
-        return LocalVLLMBackend()
-    raise ValueError(
-        f"Unknown backend '{name}'. Valid options: 'openai', 'huggingface', 'local'."
-    )
+    if name in {"openai", "gpt", "gpt-4o"}: return OpenAIBackend()
+    if name in {"huggingface", "hf"}: return HFBackend()
+    if name in {"local", "vllm"}: return LocalVLLMBackend()
+    raise ValueError(f"Invalid text backend '{name}'")
+
+
+def get_vision_backend(name: str) -> VisionBackend:
+    name = name.lower()
+    if name in {"openai", "gpt", "gpt-4o"}: return OpenAIBackend()
+    if name in {"huggingface", "hf"}: return HFBackend()
+    if name in {"local", "vllm"}: return LocalVLLMBackend()
+    raise ValueError(f"Invalid vision backend '{name}'")
+
+
+def get_backend(name: str) -> OpenAIBackend | HFBackend | LocalVLLMBackend:
+    """Kept intact for perfect legacy backwards-compatibility."""
+    name = name.lower()
+    if name in {"openai", "gpt"}: return OpenAIBackend()
+    if name in {"huggingface", "hf"}: return HFBackend()
+    if name in {"local", "vllm"}: return LocalVLLMBackend()
+    raise ValueError(f"Invalid single backend setup requested: '{name}'")

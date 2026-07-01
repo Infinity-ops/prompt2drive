@@ -24,7 +24,7 @@ from typing import Optional
 from openai import OpenAI
 from pydantic import ValidationError
 
-from backends.llm_backend import OpenAIBackend, HFBackend
+from backends.llm_backend import TextBackend
 from engine.scenario_spec import ScenarioSpec
 
 logger = logging.getLogger("prompt_to_drive.generator")
@@ -77,7 +77,7 @@ already verified as correct. Return ONLY the JSON object, no prose."""
 class Generator:
     def __init__(
         self,
-        backend: OpenAIBackend | HFBackend,
+        backend: TextBackend,
         preferred_towns: Optional[tuple[str, ...]] = None,
     ):
         self.backend = backend
@@ -138,8 +138,6 @@ class Generator:
                 )
 
             # RC#7: generate_structured must run regardless of preferred_towns.
-            # Previously it was incorrectly nested inside the `if self.preferred_towns`
-            # block, causing a NameError when no hardware profile was active.
             try:
                 parsed = self.backend.generate_structured(
                     system_prompt=system_prompt,

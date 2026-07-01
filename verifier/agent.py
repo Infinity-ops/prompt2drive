@@ -53,7 +53,7 @@ from typing import Optional, Union
 
 from pydantic import BaseModel, ValidationError
 
-from backends.llm_backend import VisionBackend, get_backend
+from backends.llm_backend import VisionBackend, get_vision_backend
 from engine.scenario_spec import ScenarioSpec
 
 logger = logging.getLogger("prompt_to_drive.verifier")
@@ -169,7 +169,7 @@ class Verifier:
     ):
         if backend is None:
             backend = os.getenv("P2D_VISION_BACKEND", "openai")
-        self.backend: VisionBackend = get_backend(backend) if isinstance(backend, str) else backend
+        self.backend: VisionBackend = get_vision_backend(backend) if isinstance(backend, str) else backend
         self.threshold = threshold
         self.n_samples = max(1, n_samples)
 
@@ -186,13 +186,6 @@ class Verifier:
             (self.backend.name + "||" + str(self.n_samples) + "||" + original_prompt
              + "||" + str(spec.model_dump()) + "||" + str(frame_paths)).encode()
         ).hexdigest()
-
-        # --- CACHE BYPASS PATCH FOR ACTIVE DEVELOPMENT MODE ---
-        # Disabling local storage checks to guarantee live frame evaluations and active updates
-        # with shelve.open(str(CACHE_PATH)) as cache:
-        #     if cache_key in cache:
-        #         logger.debug("Verifier cache hit for %s [%s]", cache_key[:8], self.backend.name)
-        #         return HybridVerificationResult(**cache[cache_key])
 
         applicable = [name for name, fn in PREDICATE_APPLICABILITY.items() if fn(spec)]
 
@@ -232,7 +225,6 @@ class Verifier:
             backend_name=self.backend.name,
         )
 
-        # cache[cache_key] = result.model_dump()
         return result
 
     # ------------------------------------------------------------------ #
