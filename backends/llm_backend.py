@@ -95,16 +95,26 @@ class OpenAIBackend(TextBackend, VisionBackend):
         return response.choices[0].message.content
 
     def verify_frames(self, prompt_text: str, frame_paths: list[str]) -> dict:
-        content = [{"type": "text", "text": prompt_text}]
-        for fp in frame_paths:
-            content.append(_encode_frame_openai(fp))
-        response = self.client.chat.completions.create(
-            model=self.vision_model,
-            messages=[{"role": "user", "content": content}],
-            max_tokens=600,
-            temperature=0.0,
-        )
-        return _parse_json_block(response.choices[0].message.content.strip())
+            # 1. Determine how many frames you are actually processing
+            selected_frames = frame_paths[:3]
+            
+            # 2. If using Llama-3.2, prepend an <|image|> tag for every image passed
+            if "llama" in self.vision_model.lower():
+                placeholders = "<|image|>" * len(selected_frames)
+                prompt_text = f"{placeholders}\n{prompt_text}"
+
+            # 3. Construct the content array normally
+            content: list[dict] = [{"type": "text", "text": prompt_text}]
+            for fp in selected_frames:
+                content.append({"type": "image_url", "image_url": {"url": _encode_frame_b64(fp)}})
+
+            response = self._client.chat.completions.create(
+                model=self.vision_model,
+                messages=[{"role": "user", "content": content}],
+                max_tokens=600,
+                temperature=0.0,
+            )
+            return _parse_json_block(response.choices[0].message.content)
 
 
 def _encode_frame_openai(frame_path: str) -> dict:

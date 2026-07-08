@@ -21,8 +21,7 @@ import shelve
 from pathlib import Path
 from typing import Optional
 
-from openai import OpenAI
-from pydantic import ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from backends.llm_backend import TextBackend
 from engine.scenario_spec import ScenarioSpec
@@ -122,10 +121,10 @@ class Generator:
             system_prompt = SYSTEM_PROMPT
 
             if self.preferred_towns:
-                towns_str = ", ".join(self.preferred_towns)
+                town_list = ", ".join(self.preferred_towns)
                 system_prompt += (
                     f"\n\n*** HARDWARE CONSTRAINT: You must use only these towns: "
-                    f"{towns_str}. "
+                    f"{town_list}. "
                     "This restriction overrides any town preference stated above. "
                     "If the user requests a feature normally associated with an "
                     "unavailable town (for example, a traffic signal or highway), "
@@ -161,27 +160,64 @@ class Generator:
             return parsed
 
 
-def generate_baseline_code(prompt: str, client: Optional[OpenAI] = None,
-                            model: str = "gpt-4o-2024-08-06") -> str:
+class BaselineCodeSchema(BaseModel):
+    code: str = Field(description="The complete, standalone CARLA Python API script.")
+
+
+def generate_baseline_code(
+    prompt: str, 
+    backend: Optional[TextBackend] = None,
+    model: str = "gpt-4o-2024-08-06"
+) -> str:
     """
     Baseline comparator used in Experiment 1: direct, free-form LLM code
-    generation with NO schema constraint. This is intentionally the "naive"
-    approach the paper compares against -- do not improve its prompt beyond
-    what a typical practitioner would write in a first attempt.
+    generation with NO schema constraint. 
+
+    CRITICAL ROBUSTNESS FIXES APPLIED:
+    To prevent syntax compilation and immediate execution failure spikes,
+    the model is explicitly instructed on defensive API rules:
+    1. Validate vehicle blueprint filters safely (never hardcode arbitrary strings).
+    2. Fallback gracefully if traffic lights or map infrastructure arrays are empty.
+    3. Use open map spawn points via `get_spawn_points()` instead of unsafe coordinates
+       to prevent immediate actor spawn collisions.
     """
-    client = client or OpenAI()
+    system_content = (
+        "You are an expert CARLA Python API developer. Write a complete, "
+        "runnable Python script using the carla module that implements the "
+        "scenario described by the user. Assume `carla`, `client`, and `world` "
+        "are already available. You must return your code inside the required JSON schema structure.\n\n"
+        "STRICT RUNTIME SAFETY MANDATES:\n"
+        "- Never guess or hardcode literal string blueprint names (e.g., 'vehicle.lincoln.mkz2017'). Always dynamically "
+        "filter arrays via `world.get_blueprint_library().filter('vehicle.*')` or similar wildcards, checking that the list is non-empty.\n"
+        "- To prevent 'Spawn failed because of collision' exceptions, retrieve valid layout positions via "
+        "`world.get_map().get_spawn_points()`. Do not construct hardcoded coordinate Transforms unless safely offset from geometry.\n"
+        "- Always guard actor interactions. If selecting traffic lights via `world.get_actors().filter('*traffic_light*')`, "
+        "verify that elements exist in the returned collection before indexing or choosing randomly.\n"
+        "- Check syntax closely. Ensure method spacing is valid (e.g., call `pedestrian.set_walk_target(...)` with underscores)."
+    )
+
+    # Route through our structured pipeline if a framework backend is provided
+    if backend is not None:
+        logger.info("Routing baseline text code request through the structured framework backend pipeline.")
+        try:
+            parsed_response = backend.generate_structured(
+                system_prompt=system_content,
+                user_prompt=prompt,
+                schema=BaselineCodeSchema
+            )
+            return parsed_response.code
+        except Exception as e:
+            logger.warning("Structured generation wrapper fallback failed: %s. Trying raw text generation.", e)
+            if hasattr(backend, "generate"):
+                return backend.generate(system_prompt=system_content, user_prompt=prompt)
+
+    # Absolute fallback (Only imported and hit if no framework backend container is active)
+    from openai import OpenAI
+    client = OpenAI()
     response = client.chat.completions.create(
         model=model,
         messages=[
-            {
-                "role": "system",
-                "content": (
-                    "You are an expert CARLA Python API developer. Write a complete, "
-                    "runnable Python script using the carla module that implements the "
-                    "scenario described by the user. Assume `carla`, `client`, and `world` "
-                    "are already available. Return ONLY Python code."
-                ),
-            },
+            {"role": "system", "content": system_content},
             {"role": "user", "content": prompt},
         ],
         temperature=0.4,

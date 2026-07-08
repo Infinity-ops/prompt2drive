@@ -7,32 +7,32 @@ Usage examples
 --------------
 
 # Using local Qwen2.5-VL served by vLLM (YOUR SETUP):
-python run_scenario.py \\
-    --prompt "A pedestrian suddenly crosses near a traffic signal in rainy weather" \\
-    --hardware-profile low_vram_2gb_signals \\
-    --backend local \\
+python run_scenario.py \
+    --prompt "A pedestrian suddenly crosses near a traffic signal in rainy weather" \
+    --hardware-profile low_vram_2gb_signals \
+    --backend local \
     --mode full
 
 # Using HuggingFace cloud models:
-python run_scenario.py \\
-    --prompt "A pedestrian suddenly crosses near a traffic signal in rainy weather" \\
-    --hardware-profile low_vram_2gb_signals \\
-    --backend huggingface \\
+python run_scenario.py \
+    --prompt "A pedestrian suddenly crosses near a traffic signal in rainy weather" \
+    --hardware-profile low_vram_2gb_signals \
+    --backend huggingface \
     --mode full
 
 # Full evaluation run (all scenarios):
-python -m eval.run_full_evaluation \\
-    --dataset scenarios/dataset.json \\
-    --mode full \\
-    --out outputs/full \\
-    --backend local \\
+python -m eval.run_full_evaluation \
+    --dataset scenarios/dataset.json \
+    --mode full \
+    --out outputs/full \
+    --backend local \
     --hardware-profile low_vram_2gb_signals
 
 # Then compute metrics:
-python -m eval.compute_metrics \\
-    --full-dir outputs/full \\
-    --generator-only-dir outputs/generator_only \\
-    --baseline-dir outputs/baseline \\
+python -m eval.compute_metrics \
+    --full-dir outputs/full \
+    --generator-only-dir outputs/generator_only \
+    --baseline-dir outputs/baseline \
     --out outputs/metrics.json
 
 Environment variables (set in .env or shell)
@@ -58,6 +58,7 @@ from dotenv import load_dotenv
 
 from orchestrator.pipeline import PromptToDrivePipeline
 from engine.carla_runner import CarlaRunner
+from backends.llm_backend import get_backend
 
 load_dotenv()
 
@@ -91,7 +92,7 @@ def main():
             "  huggingface -- HF Inference API (requires HF_TOKEN)\n"
             "  local       -- locally served vLLM (Qwen2.5-VL at localhost:8000)\n"
             "                 Start with: vllm serve ~/models/Qwen2.5-VL-7B-Instruct \\\n"
-            "                                 --dtype float16 --max-model-len 8192"
+            "                                  --dtype float16 --max-model-len 8192"
         ),
     )
     args = parser.parse_args()
@@ -117,12 +118,17 @@ def main():
         port=args.carla_port,
         hardware_profile=args.hardware_profile,
     )
+
+    # Get the universal backend client instance
+    backend_instance = get_backend(args.backend)
+
     pipeline = PromptToDrivePipeline(
         runner=runner,
         max_iterations=args.max_iterations,
         output_root=args.out,
         hardware_profile=args.hardware_profile,
-        backend=args.backend,
+        text_backend=backend_instance,
+        vision_backend=backend_instance,
     )
 
     profile_info = ""

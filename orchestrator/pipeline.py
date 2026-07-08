@@ -41,7 +41,7 @@ import tracemalloc
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Any
 
 from engine.carla_runner import CarlaRunner, ExecutionResult
 from engine.scenario_spec import ScenarioSpec
@@ -114,8 +114,8 @@ class AgentLatencies:
     rather than asserting it.
     """
     generator_s:      float = 0.0
-    engine_s:         float = 0.0
-    verifier_s:       float = 0.0
+    engine_s:          float = 0.0
+    verifier_s:        float = 0.0
     reflector_s:      float = 0.0
     total_pipeline_s: float = 0.0
 
@@ -175,7 +175,8 @@ class PromptToDrivePipeline:
         max_iterations: int = MAX_ITERATIONS,
         output_root: str = "outputs",
         hardware_profile: Optional[str] = None,
-        backend: str = "openai",
+        text_backend: Optional[Any] = None,
+        vision_backend: Optional[Any] = None,
     ):
         from engine.hardware_config import get_preferred_towns
 
@@ -190,14 +191,19 @@ class PromptToDrivePipeline:
                 self.preferred_towns,
             )
 
-        self.backend_name = backend.lower()
-        self.backend = get_backend(self.backend_name)
+        # Store resolved engine backends
+        self.text_backend = text_backend
+        self.vision_backend = vision_backend
 
+        # Initialize Generator using text engine backend
         self.generator = generator or Generator(
-            backend=self.backend,
+            backend=self.text_backend,
             preferred_towns=self.preferred_towns,
         )
-        self.verifier = verifier or Verifier(backend=self.backend)
+        
+        # Initialize Verifier using vision engine backend
+        self.verifier = verifier or Verifier(backend=self.vision_backend)
+        
         self.runner = runner or CarlaRunner()
         self.max_iterations = max_iterations
         self.output_root = Path(output_root)
@@ -249,15 +255,42 @@ class PromptToDrivePipeline:
                 len(exec_result.frame_paths),
             )
 
-            # ---- Agent 3: Verifier -----------------------------------------
-            with _timer("verifier", iter_latencies):
-                verification: HybridVerificationResult = self.verifier.verify(
-                    original_prompt=prompt,
-                    spec=spec,
-                    frame_paths=exec_result.frame_paths,
-                    log_path=exec_result.log_path or "",
-                    exec_success=exec_result.success,
+            # ---- Agent 3: Verifier (Short-circuited in generator_only mode) --
+            if mode == "generator_only":
+                logger.info("[%s] iter=%d Skipping VLM verification (generator_only mode)", scenario_id, iteration)
+                verification = HybridVerificationResult(
+                    overall_pass=True,
+                    final_score=1.0,
+                    missing_elements=[],
+                    vlm_result={
+                        "weather_correct": True,
+                        "pedestrian_present": False,
+                        "vehicles_present": False,
+                        "event_observable": True,
+                        "intent_alignment_score": 1.0,
+                        "excess_elements": [],
+                        "confidence": 1.0,
+                        "notes": "Skipped in generator_only mode"
+                    },
+                    predicate_agreement=1.0,
+                    predicate_agreement_std=0.0,
+                    applicable_predicates=[],
+                    failed_predicates=[],
+                    n_samples=0,
+                    log_checks_passed=0,
+                    log_checks_total=0,
+                    execution_success=exec_result.success
                 )
+                iter_latencies["verifier_s"] = 0.0
+            else:
+                with _timer("verifier", iter_latencies):
+                    verification = self.verifier.verify(
+                        original_prompt=prompt,
+                        spec=spec,
+                        frame_paths=exec_result.frame_paths,
+                        log_path=exec_result.log_path or "",
+                        exec_success=exec_result.success,
+                    )
 
             logger.info(
                 "[%s] iter=%d Verifier: %.2fs → score=%.2f passed=%s missing=%s",
@@ -296,7 +329,10 @@ class PromptToDrivePipeline:
 
             # ---- Exit conditions -------------------------------------------
             if verification.overall_pass:
-                run_record.final_status = "passed"
+                if mode == "generator_only":
+                    run_record.final_status = "generator_only_no_retry"
+                else:
+                    run_record.final_status = "passed"
                 break
 
             if mode == "generator_only":
@@ -308,16 +344,12 @@ class PromptToDrivePipeline:
                 break
 
             # ---- Agent 4: Reflector (only when next iteration exists) ------
-            # Guard: only call reflect() when there is a next iteration to
-            # use the result. Previously reflect() fired on every iteration
-            # including the last, logging a spurious "Reflector iteration N"
-            # for a generation that would never run. (Bug fix from prior session.)
             if iteration < iterations - 1:
                 with _timer("reflector", iter_latencies):
                     refinement_context = reflect(
                         prompt, verification,
                         iteration + 1,
-                        preferred_towns=self.preferred_towns,
+                        preferred_town=self.preferred_towns,
                     )
                 # Update the reflector latency in the already-appended record
                 run_record.iterations[-1].latencies.reflector_s = (
