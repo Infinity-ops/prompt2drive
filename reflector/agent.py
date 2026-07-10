@@ -2,25 +2,19 @@
 reflector/agent.py
 
 Agent 3 — Reflector.
-
 Performs structured root-cause analysis of a failed VerificationResult and
-produces a targeted refinement_context string for the Generator's next
-iteration. The design principle (Section 3.4 of the paper) is: every
-correction maps exactly one missing element to one specific, actionable
-instruction. This keeps reflection auditable and avoids regressing fields
-that were already verified correct.
+uses an LLM backend (via Cloud) to produce a targeted refinement_context 
+string for the Generator's next iteration. Fully falls back to rule-based engineering.
 """
 from __future__ import annotations
 
 import logging
-from typing import Optional
-from backends.llm_backend import TextBackend
+from typing import Optional, Any
 from verifier.agent import HybridVerificationResult
 
 logger = logging.getLogger("prompt_to_drive.reflector")
 
-# Rule-based corrections for the most common missing-element categories.
-# Extend this table as new failure modes are observed in your own dataset.
+# Master Rule-Based Lookup Table (Serves as your primary backup strategy)
 ELEMENT_CORRECTIONS: dict[str, str] = {
     "traffic_light": (
         "Ensure the scenario uses a town with signalized intersections "
@@ -68,71 +62,133 @@ ELEMENT_CORRECTIONS: dict[str, str] = {
 }
 
 
-def _lookup_correction(element: str) -> str:
-    element_lower = element.lower()
-    for key, correction in ELEMENT_CORRECTIONS.items():
-        if key in element_lower:
-            return f"- {correction}"
-    return (
-        f"- Element '{element}' was reported missing from the simulation. "
-        f"Re-examine the relevant ScenarioSpec field(s) and ensure this "
-        f"element is present and visually verifiable."
-    )
+class Reflector:
+    def __init__(self, backend: Optional[Any] = None):
+        """
+        Initializes the Reflector Agent with a cloud or local text backend instance.
+        If no backend is provided, it defaults immediately to deterministic rules.
+        """
+        self.backend = backend
 
+    def reflect(
+        self,
+        prompt: str,  # Fixed parameter name to align with pipeline caller
+        verification_result: HybridVerificationResult,
+        iteration: int,
+        preferred_towns: tuple[str, ...] | None = None,
+    ) -> str:
+        """
+        Builds a refinement context string using either cloud LLM inference or 
+        rule-based backup logic depending on availability and system exceptions.
+        """
+        missing = verification_result.missing_elements
+        excess = getattr(verification_result.vlm_result, "excess_elements", None)
+        score = verification_result.final_score
+        
+        # Safe dot-notation object property lookup to prevent AttributeError
+        notes = getattr(verification_result.vlm_result, "notes", "No additional verifier notes provided.")
 
-def reflect(
-    original_prompt: str,
-    verification_result: HybridVerificationResult,
-    iteration: int,
-    preferred_towns: tuple[str, ...] | None = None,
-    backend: Optional[TextBackend] = None,
-) -> str:
-    """
-    Build a refinement_context string to prepend to the next Generator
-    call. This is the entire interface between the Verifier and the next
-    Generator iteration -- keep it self-contained and explicit.
-    """
-    missing = verification_result.missing_elements
-    excess = verification_result.vlm_result.excess_elements
-    score = verification_result.final_score
+        # --- Rule-Based Verification Corrections Assembly ---
+        corrections = []
+        if missing:
+            for e in missing:
+                matched = False
+                element_lower = e.lower()
+                for key, correction in ELEMENT_CORRECTIONS.items():
+                    if key in element_lower:
+                        corrections.append(f"- {correction}")
+                        matched = True
+                        break
+                if not matched:
+                    corrections.append(
+                        f"- Element '{e}' was reported missing. Re-examine relevant ScenarioSpec fields "
+                        f"to ensure this element is present and visually verifiable."
+                    )
+        else:
+            corrections.append("- No specific missing elements identified; broadly re-examine all fields.")
 
-    corrections = [_lookup_correction(e) for e in missing] or [
-        "- No specific missing elements identified; broadly re-examine all "
-        "fields for alignment with the original prompt."
-    ]
+        excess_notes = ""
+        if excess:
+            excess_notes = f"\nAvoid reintroducing unintended elements from previous attempt: {excess}."
 
-    excess_notes = ""
-    if excess:
-        excess_notes = (
-            f"\nAvoid reintroducing unintended elements from the previous "
-            f"attempt: {excess}. Constrain the scenario more tightly to "
-            f"only what the prompt describes."
+        hardware_note = ""
+        if preferred_towns:
+            towns_str = ", ".join(preferred_towns)
+            hardware_note = f"\nIMPORTANT: Hardware constraint active. Only use these maps: {towns_str}."
+
+        # --- Pipeline Routing Action ---
+        if not self.backend:
+            logger.info("No Reflector backend assigned. Executing deterministic rule-based reflection.")
+            return self._format_rule_context(iteration, score, missing, notes, corrections, excess_notes, hardware_note)
+
+        logger.info("Invoking cloud LLM Reflector backend for iteration %d", iteration)
+
+        system_prompt = (
+            "You are an expert autonomous driving scenario engineer. Your job is to analyze a failed "
+            "simulation run and output explicit instructions for the scenario generator to fix it. "
+            "Keep instructions high-level, action-oriented, and conversational. Do not output code."
         )
 
-    affected_fields = sorted({e.split("_")[0] for e in missing}) if missing else ["all fields"]
+        user_content = f"""
+User Target Intent Prompt: "{prompt}"
 
-    hardware_note = ""
-    if preferred_towns:
-        towns_str = ", ".join(preferred_towns)
-        hardware_note = (
-            f"\nIMPORTANT: Hardware constraint active. Only use these towns: {towns_str}. "
-            f"The system cannot handle larger maps due to memory limitations."
-        )
+Simulation Execution Failure Context:
+- Current Alignment Score: {score:.2f} / 1.00
+- Confirmed Missing Elements: {missing}
+- Visual Verifier Notes: "{notes}"
+{hardware_note}
 
-    context = f"""[REFLECTION -- iteration {iteration}]
-Previous semantic alignment score: {score:.2f} (pass threshold: {verification_result.overall_pass and "PASSED" or "0.72"})
-Verifier notes: {verification_result.vlm_result.notes}
+Review the baseline rule corrections for these failures:
+{chr(10).join(corrections)}
+{excess_notes}
+
+Synthesize these insights into a concise, human-like instruction list directing the generator on how to fix the fields.
+        """.strip()
+
+        try:
+            # Executes cloud inference (adapts cleanly to both OpenAI wrapper format and local string generation scripts)
+            if hasattr(self.backend, "generate"):
+                response = self.backend.generate(prompt=user_content, system_prompt=system_prompt)
+            else:
+                # Fallback implementation if the api wrapper uses a basic call signature
+                response = self.backend(f"{system_prompt}\n\n{user_content}")
+
+            return f"""[LLM REFLECTION -- iteration {iteration}]
+Previous score: {score:.2f}
+{response.strip()}
+
+Apply all adjustments above. Preserve fields not implicated in errors.""".strip()
+
+        except Exception as e:
+            logger.error("Cloud LLM reflection inference failed: %s. Activating Rule-Based fallback safety block.", e)
+            return self._format_rule_context(iteration, score, missing, notes, corrections, excess_notes, hardware_note)
+
+    def _format_rule_context(
+        self, iteration: int, score: float, missing: list[str], notes: str, 
+        corrections: list[str], excess_notes: str, hardware_note: str
+    ) -> str:
+        """Helper method to format the rule-based backup block identically to old script requirements."""
+        affected_fields = sorted({e.split("_")[0] for e in missing}) if missing else ["all fields"]
+        
+        return f"""[RULE REFLECTION -- iteration {iteration}]
+Previous semantic alignment score: {score:.2f}
+Verifier notes: {notes}
 Missing elements identified: {missing}
 
 REQUIRED CORRECTIONS for this regeneration:
 {chr(10).join(corrections)}{excess_notes}{hardware_note}
 
-Apply all corrections above. Preserve any field NOT implicated in the
-missing-element list, since it was already verified as correct.
+Apply all corrections above. Preserve any field NOT implicated in the missing-element list.
 Fields most likely needing adjustment: {", ".join(affected_fields)}.""".strip()
 
-    logger.info(
-        "Reflector iteration %s: score=%.2f missing=%s using backend=%s", 
-        iteration, score, missing, backend.name if backend else "default"
-    )
-    return context
+
+# Main operational interface entry point mapped exactly to eval/run_full_evaluation.py
+def reflect(
+    prompt: str,  # Fixed wrapper positional name
+    verification_result: HybridVerificationResult,
+    iteration: int,
+    preferred_towns: tuple[str, ...] | None = None,
+    backend: Optional[Any] = None,
+) -> str:
+    agent = Reflector(backend=backend)
+    return agent.reflect(prompt, verification_result, iteration, preferred_towns)

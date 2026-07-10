@@ -281,6 +281,76 @@
         "vehicles_present": true,
         "event_observable": true
       }
+    },
+    {
+      "id": "s21",
+      "prompt": "In dense fog at night, an oncoming vehicle drifts completely into the ego lane while a pedestrian simultaneously steps off the right curb.",
+      "difficulty": "hard",
+      "expected_weather": "fog",
+      "expected_event": "lane_change",
+      "expected_actors": ["vehicles", "pedestrian"],
+      "ground_truth_predicates": {
+        "weather_correct": true,
+        "pedestrian_present": true,
+        "vehicles_present": true,
+        "event_observable": true
+      }
+    },
+    {
+      "id": "s22",
+      "prompt": "On a rainy day with heavy spray, a large truck suddenly drops debris blocking the center lane, forcing a trailing vehicle to execute an emergency brake directly ahead of the ego.",
+      "difficulty": "hard",
+      "expected_weather": "rain",
+      "expected_event": "emergency_brake",
+      "expected_actors": ["vehicles"],
+      "ground_truth_predicates": {
+        "weather_correct": true,
+        "pedestrian_present": false,
+        "vehicles_present": true,
+        "event_observable": true
+      }
+    },
+    {
+      "id": "s23",
+      "prompt": "At a blind T-junction on a cloudy evening, a speeding cyclist runs a red light while an automated delivery robot creates a static obstruction on the crosswalk.",
+      "difficulty": "hard",
+      "expected_weather": "cloudy",
+      "expected_event": "red_light_violation",
+      "expected_actors": ["cyclist", "vehicles"],
+      "ground_truth_predicates": {
+        "weather_correct": true,
+        "pedestrian_present": true,
+        "vehicles_present": true,
+        "event_observable": true
+      }
+    },
+    {
+      "id": "s24",
+      "prompt": "During a heavy rainstorm at night, an aggressive sports car performs a high-speed overtaking maneuver via the breakdown lane while the ego is passing a slow-moving maintenance vehicle.",
+      "difficulty": "hard",
+      "expected_weather": "rain",
+      "expected_event": "overtaking",
+      "expected_actors": ["vehicles"],
+      "ground_truth_predicates": {
+        "weather_correct": true,
+        "pedestrian_present": false,
+        "vehicles_present": true,
+        "event_observable": true
+      }
+    },
+    {
+      "id": "s25",
+      "prompt": "In clear but blinding low-sun morning glare, a group of jaywalking pedestrians suddenly crosses mid-block behind a parked city bus, causing the ego vehicle to perform a sharp evasive lane change.",
+      "difficulty": "hard",
+      "expected_weather": "clear",
+      "expected_event": "crossing",
+      "expected_actors": ["pedestrian", "vehicles"],
+      "ground_truth_predicates": {
+        "weather_correct": true,
+        "pedestrian_present": true,
+        "vehicles_present": true,
+        "event_observable": true
+      }
     }
   ]
 }

@@ -14,22 +14,12 @@ aggregate them into the systems-evaluation tables the reviewer asked for:
 
   - Per-agent latency breakdown (Generator / Engine / Verifier / Reflector)
   - Total pipeline wall time
-  - Peak memory footprint per iteration (via tracemalloc)
+  - Peak memory footprint per iteration (via resource/tracemalloc)
 
-This directly answers:
-  "Where does the time go?"
-  "Does the reflection loop delay control past real-time thresholds?"
-  "What is the architectural cost of each agent?"
-
-IMPORTANT FRAMING (for the paper text, not code):
+IMPORTANT FRAMING:
 Prompt-to-Drive operates at SCENARIO-AUTHORING TIME, not inside the
-vehicle control loop. CARLA's autopilot / Traffic Manager handles all
-actor motion during execution. The LLM agents are invoked once per
-scenario generation cycle, not once per control tick. The relevant
-latency metric is therefore SCENARIO THROUGHPUT (scenarios/hour for a
-CI validation pipeline), not control-loop determinism (Hz). This must
-be stated explicitly in the paper's Experimental Setup section to
-pre-empt the "vehicle drove off a cliff" review comment.
+vehicle control loop. The relevant latency metric is therefore SCENARIO 
+THROUGHPUT, not control-loop determinism (Hz).
 """
 from __future__ import annotations
 
@@ -37,7 +27,6 @@ import json
 import logging
 import resource
 import time
-import tracemalloc
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -46,9 +35,8 @@ from typing import Optional, Any
 from engine.carla_runner import CarlaRunner, ExecutionResult
 from engine.scenario_spec import ScenarioSpec
 from generator.agent import Generator
-from reflector.agent import reflect
 from verifier.agent import HybridVerificationResult, Verifier
-from backends.llm_backend import get_backend
+from reflector.agent import Reflector, reflect  # Supports both Class or functional reflection
 
 logger = logging.getLogger("prompt_to_drive.orchestrator")
 
@@ -60,16 +48,7 @@ MAX_ITERATIONS = 3
 # -----------------------------------------------------------------------
 @contextmanager
 def _timer(label: str, store: dict):
-    """
-    Measures wall-clock duration of a code block using time.perf_counter()
-    (monotonic, sub-millisecond resolution) and stores the result in `store`.
-
-    Usage:
-        latencies = {}
-        with _timer("generator", latencies):
-            spec = generator.generate(prompt)
-        # latencies["generator_s"] == elapsed seconds
-    """
+    """Measures wall-clock duration of a code block using time.perf_counter()."""
     t0 = time.perf_counter()
     try:
         yield
@@ -78,14 +57,8 @@ def _timer(label: str, store: dict):
 
 
 def _peak_memory_mb() -> float:
-    """
-    Returns the peak RSS memory usage of this process in megabytes.
-    Uses resource.getrusage which is available on Linux (the target
-    deployment platform for CARLA + vLLM).
-    Falls back to 0.0 on platforms where it is unavailable.
-    """
+    """Returns the peak RSS memory usage of this process in megabytes."""
     try:
-        # ru_maxrss is in kilobytes on Linux
         return round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0, 2)
     except Exception:
         return 0.0
@@ -96,26 +69,9 @@ def _peak_memory_mb() -> float:
 # -----------------------------------------------------------------------
 @dataclass
 class AgentLatencies:
-    """
-    Wall-clock time in seconds spent inside each agent for one iteration.
-
-    generator_s:  time for the LLM to produce a ScenarioSpec JSON
-    engine_s:     time for CARLA to execute the scenario (tick loop)
-    verifier_s:   time for VLM to evaluate frames + log checks
-    reflector_s:  time for rule-based reflector to build refinement context
-                  (0.0 if no reflection was needed this iteration)
-
-    total_pipeline_s: sum of the above — the full iteration wall time.
-
-    These numbers answer the reviewer's question:
-    "Does the reflection loop delay control past real-time thresholds?"
-    Answer: no, because the loop runs at scenario-authoring time, not
-    inside the vehicle control loop. But the numbers prove this claim
-    rather than asserting it.
-    """
     generator_s:      float = 0.0
-    engine_s:          float = 0.0
-    verifier_s:        float = 0.0
+    engine_s:         float = 0.0
+    verifier_s:       float = 0.0
     reflector_s:      float = 0.0
     total_pipeline_s: float = 0.0
 
@@ -129,7 +85,6 @@ class IterationRecord:
     verification_score: float
     verification_passed: bool
     missing_elements: list[str]
-    # ---- NEW: systems metrics ----
     latencies: AgentLatencies = field(default_factory=AgentLatencies)
     peak_memory_mb: float = 0.0
 
@@ -142,7 +97,6 @@ class PipelineRun:
     iterations: list[IterationRecord] = field(default_factory=list)
     final_status: str = "in_progress"
     total_wall_time_s: float = 0.0
-    # ---- NEW: aggregate systems metrics across all iterations ----
     total_generator_s: float = 0.0
     total_engine_s:    float = 0.0
     total_verifier_s:  float = 0.0
@@ -150,9 +104,7 @@ class PipelineRun:
     peak_memory_mb:    float = 0.0
 
     def to_json(self) -> str:
-        d = asdict(self)
-        # asdict handles nested dataclasses recursively
-        return json.dumps(d, indent=2)
+        return json.dumps(asdict(self), indent=2)
 
 
 # -----------------------------------------------------------------------
@@ -160,23 +112,21 @@ class PipelineRun:
 # -----------------------------------------------------------------------
 class PromptToDrivePipeline:
     """
-    The main closed-loop entry point.
-
-    mode="full"           -> Generator -> Engine -> Verifier -> Reflector loop
-    mode="generator_only" -> Generator -> Engine -> Verifier, no retries
-    mode="baseline"       -> handled separately via eval/run_baseline.py
+    The main closed-loop entry point managing three dedicated LLM/VLM models.
     """
 
     def __init__(
         self,
         generator: Optional[Generator] = None,
         verifier: Optional[Verifier] = None,
+        reflector: Optional[Reflector] = None,
         runner: Optional[CarlaRunner] = None,
         max_iterations: int = MAX_ITERATIONS,
         output_root: str = "outputs",
         hardware_profile: Optional[str] = None,
-        text_backend: Optional[Any] = None,
-        vision_backend: Optional[Any] = None,
+        generator_backend: Optional[Any] = None,
+        verifier_backend: Optional[Any] = None,
+        reflector_backend: Optional[Any] = None,
     ):
         from engine.hardware_config import get_preferred_towns
 
@@ -187,22 +137,28 @@ class PromptToDrivePipeline:
             self.preferred_towns = get_preferred_towns(hardware_profile)
             logger.info(
                 "Hardware profile '%s' active: restricted to towns %s",
-                hardware_profile,
-                self.preferred_towns,
+                hardware_profile, self.preferred_towns,
             )
 
-        # Store resolved engine backends
-        self.text_backend = text_backend
-        self.vision_backend = vision_backend
+        # Store resolved backends cleanly
+        self.generator_backend = generator_backend
+        self.verifier_backend = verifier_backend
+        self.reflector_backend = reflector_backend
 
-        # Initialize Generator using text engine backend
+        # Explicitly assign dedicated backends to respective agents
         self.generator = generator or Generator(
-            backend=self.text_backend,
+            backend=self.generator_backend,
             preferred_towns=self.preferred_towns,
         )
         
-        # Initialize Verifier using vision engine backend
-        self.verifier = verifier or Verifier(backend=self.vision_backend)
+        self.verifier = verifier or Verifier(
+            backend=self.verifier_backend
+        )
+        
+        # Instantiates explicit Reflector agent if available, else falls back to functional interface
+        self.reflector = reflector or (
+            Reflector(backend=self.reflector_backend) if 'Reflector' in globals() or reflector_backend else None
+        )
         
         self.runner = runner or CarlaRunner()
         self.max_iterations = max_iterations
@@ -210,11 +166,6 @@ class PromptToDrivePipeline:
 
     def run(self, prompt: str, scenario_id: str, mode: str = "full",
             rng_seed: Optional[int] = None) -> PipelineRun:
-        """
-        rng_seed is forwarded to the runner for reproducible NPC/pedestrian
-        spawn placement. Used by eval/run_full_evaluation.py when running the
-        expanded seeded dataset.
-        """
         t0_total = time.perf_counter()
         run_record = PipelineRun(scenario_id=scenario_id, prompt=prompt, mode=mode)
         refinement_context = ""
@@ -232,8 +183,7 @@ class PromptToDrivePipeline:
 
             logger.info(
                 "[%s] iter=%d Generator: %.2fs → town=%s weather=%s event=%s",
-                scenario_id, iteration,
-                iter_latencies["generator_s"],
+                scenario_id, iteration, iter_latencies["generator_s"],
                 spec.town, spec.weather, spec.event_type,
             )
 
@@ -249,10 +199,8 @@ class PromptToDrivePipeline:
 
             logger.info(
                 "[%s] iter=%d Engine: %.2fs → success=%s frames=%d",
-                scenario_id, iteration,
-                iter_latencies["engine_s"],
-                exec_result.success,
-                len(exec_result.frame_paths),
+                scenario_id, iteration, iter_latencies["engine_s"],
+                exec_result.success, len(exec_result.frame_paths),
             )
 
             # ---- Agent 3: Verifier (Short-circuited in generator_only mode) --
@@ -262,16 +210,7 @@ class PromptToDrivePipeline:
                     overall_pass=True,
                     final_score=1.0,
                     missing_elements=[],
-                    vlm_result={
-                        "weather_correct": True,
-                        "pedestrian_present": False,
-                        "vehicles_present": False,
-                        "event_observable": True,
-                        "intent_alignment_score": 1.0,
-                        "excess_elements": [],
-                        "confidence": 1.0,
-                        "notes": "Skipped in generator_only mode"
-                    },
+                    vlm_result={"notes": "Skipped in generator_only mode", "intent_alignment_score": 1.0},
                     predicate_agreement=1.0,
                     predicate_agreement_std=0.0,
                     applicable_predicates=[],
@@ -294,25 +233,18 @@ class PromptToDrivePipeline:
 
             logger.info(
                 "[%s] iter=%d Verifier: %.2fs → score=%.2f passed=%s missing=%s",
-                scenario_id, iteration,
-                iter_latencies["verifier_s"],
-                verification.final_score,
-                verification.overall_pass,
-                verification.missing_elements,
+                scenario_id, iteration, iter_latencies["verifier_s"],
+                verification.final_score, verification.overall_pass, verification.missing_elements,
             )
 
-            # ---- Reflector latency slot (filled below if reflection runs) --
+            # ---- Reflector latency initialization slot --------------------
             iter_latencies["reflector_s"] = 0.0
 
-            # ---- Capture memory footprint ----------------------------------
+            # ---- Capture system metrics ------------------------------------
             mem_mb = _peak_memory_mb()
+            iter_latencies["total_pipeline_s"] = round(time.perf_counter() - iter_t0, 4)
 
-            # ---- Compute total for this iteration --------------------------
-            iter_latencies["total_pipeline_s"] = round(
-                time.perf_counter() - iter_t0, 4
-            )
-
-            # ---- Record ----------------------------------------------------
+            # ---- Record current iteration ----------------------------------
             run_record.iterations.append(
                 IterationRecord(
                     iteration=iteration,
@@ -329,10 +261,7 @@ class PromptToDrivePipeline:
 
             # ---- Exit conditions -------------------------------------------
             if verification.overall_pass:
-                if mode == "generator_only":
-                    run_record.final_status = "generator_only_no_retry"
-                else:
-                    run_record.final_status = "passed"
+                run_record.final_status = "generator_only_no_retry" if mode == "generator_only" else "passed"
                 break
 
             if mode == "generator_only":
@@ -343,51 +272,50 @@ class PromptToDrivePipeline:
                 run_record.final_status = "execution_failed"
                 break
 
-            # ---- Agent 4: Reflector (only when next iteration exists) ------
+            # ---- Agent 4: Reflector (Runs if another iteration is scheduled) --
             if iteration < iterations - 1:
                 with _timer("reflector", iter_latencies):
-                    refinement_context = reflect(
-                        prompt, verification,
-                        iteration + 1,
-                        preferred_town=self.preferred_towns,
-                    )
-                # Update the reflector latency in the already-appended record
-                run_record.iterations[-1].latencies.reflector_s = (
-                    iter_latencies["reflector_s"]
-                )
+                    if self.reflector and hasattr(self.reflector, "reflect"):
+                        # Class instance approach
+                        refinement_context = self.reflector.reflect(
+                            prompt=prompt,
+                            verification_result=verification,
+                            iteration=iteration + 1,
+                            preferred_town=self.preferred_towns
+                        )
+                    else:
+                        # Fallback functional approach utilizing clean reflector_backend parameter
+                        refinement_context = reflect(
+                            prompt,
+                            verification,
+                            iteration + 1,
+                            preferred_town=self.preferred_towns,
+                            backend=self.reflector_backend  # Fed cleanly into the agent module
+                        )
+                        
+                run_record.iterations[-1].latencies.reflector_s = iter_latencies["reflector_s"]
                 logger.info(
                     "[%s] iter=%d Reflector: %.2fs",
-                    scenario_id, iteration,
-                    iter_latencies["reflector_s"],
+                    scenario_id, iteration, iter_latencies["reflector_s"],
                 )
 
         else:
             run_record.final_status = "iteration_limit_reached"
 
-        # ---- Aggregate latencies across all iterations ---------------------
+        # ---- Aggregate systems metrics over lifecycle --------------------
         run_record.total_wall_time_s = round(time.perf_counter() - t0_total, 2)
-        run_record.total_generator_s  = round(sum(
-            it.latencies.generator_s for it in run_record.iterations), 4)
-        run_record.total_engine_s     = round(sum(
-            it.latencies.engine_s    for it in run_record.iterations), 4)
-        run_record.total_verifier_s   = round(sum(
-            it.latencies.verifier_s  for it in run_record.iterations), 4)
-        run_record.total_reflector_s  = round(sum(
-            it.latencies.reflector_s for it in run_record.iterations), 4)
-        run_record.peak_memory_mb     = max(
-            (it.peak_memory_mb for it in run_record.iterations), default=0.0)
+        run_record.total_generator_s  = round(sum(it.latencies.generator_s for it in run_record.iterations), 4)
+        run_record.total_engine_s     = round(sum(it.latencies.engine_s for it in run_record.iterations), 4)
+        run_record.total_verifier_s   = round(sum(it.latencies.verifier_s for it in run_record.iterations), 4)
+        run_record.total_reflector_s  = round(sum(it.latencies.reflector_s for it in run_record.iterations), 4)
+        run_record.peak_memory_mb     = max((it.peak_memory_mb for it in run_record.iterations), default=0.0)
 
-        # ---- Log summary ---------------------------------------------------
+        # ---- Print aggregate telemetry summary ---------------------------
         logger.info(
             "[%s] DONE status=%s | wall=%.1fs | gen=%.1fs eng=%.1fs ver=%.1fs ref=%.1fs | mem=%.0fMB",
-            scenario_id,
-            run_record.final_status,
-            run_record.total_wall_time_s,
-            run_record.total_generator_s,
-            run_record.total_engine_s,
-            run_record.total_verifier_s,
-            run_record.total_reflector_s,
-            run_record.peak_memory_mb,
+            scenario_id, run_record.final_status, run_record.total_wall_time_s,
+            run_record.total_generator_s, run_record.total_engine_s,
+            run_record.total_verifier_s, run_record.total_reflector_s, run_record.peak_memory_mb,
         )
 
         self._persist(run_record)
@@ -400,7 +328,5 @@ class PromptToDrivePipeline:
             f.write(run_record.to_json())
         logger.info(
             "Scenario %s finished: status=%s iterations=%d",
-            run_record.scenario_id,
-            run_record.final_status,
-            len(run_record.iterations),
+            run_record.scenario_id, run_record.final_status, len(run_record.iterations),
         )
