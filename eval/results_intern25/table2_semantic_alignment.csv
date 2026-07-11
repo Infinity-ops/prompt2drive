@@ -1,0 +1,16 @@
+category,subcategory,generator_only,full
+overall,-,1.0,0.715
+by_difficulty,easy,1.0,0.787
+by_difficulty,hard,1.0,0.685
+by_difficulty,medium,1.0,0.711
+by_weather,clear,1.0,0.742
+by_weather,cloudy,1.0,0.762
+by_weather,fog,1.0,0.533
+by_weather,night,1.0,0.703
+by_weather,rain,1.0,0.766
+by_event,crossing,1.0,0.639
+by_event,emergency_brake,1.0,0.738
+by_event,lane_change,1.0,0.812
+by_event,obstruction,1.0,0.814
+by_event,overtaking,1.0,0.869
+by_event,red_light_violation,1.0,0.535

@@ -11,6 +11,8 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import gc
+import torch
 from pathlib import Path
 
 from orchestrator.pipeline import PromptToDrivePipeline
@@ -98,6 +100,13 @@ def main():
                     run.final_status,
                     run.iterations[-1].verification_score if run.iterations else 0.0,
                     len(run.iterations))
+        
+        # --- Memory Cleanup Safety Block ---
+        # Wipes orphaned object trees and explicitly releases VRAM segments 
+        # before the next scenario map loading sequence initializes.
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     logger.info("Done. %d scenarios run, results in %s/<scenario_id>/pipeline_run.json", len(all_runs), args.out)
 

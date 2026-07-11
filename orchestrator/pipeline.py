@@ -23,6 +23,7 @@ THROUGHPUT, not control-loop determinism (Hz).
 """
 from __future__ import annotations
 
+import gc
 import json
 import logging
 import resource
@@ -31,6 +32,8 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Optional, Any
+
+import torch
 
 from engine.carla_runner import CarlaRunner, ExecutionResult
 from engine.scenario_spec import ScenarioSpec
@@ -204,32 +207,15 @@ class PromptToDrivePipeline:
             )
 
             # ---- Agent 3: Verifier (Short-circuited in generator_only mode) --
-            if mode == "generator_only":
-                logger.info("[%s] iter=%d Skipping VLM verification (generator_only mode)", scenario_id, iteration)
-                verification = HybridVerificationResult(
-                    overall_pass=True,
-                    final_score=1.0,
-                    missing_elements=[],
-                    vlm_result={"notes": "Skipped in generator_only mode", "intent_alignment_score": 1.0},
-                    predicate_agreement=1.0,
-                    predicate_agreement_std=0.0,
-                    applicable_predicates=[],
-                    failed_predicates=[],
-                    n_samples=0,
-                    log_checks_passed=0,
-                    log_checks_total=0,
-                    execution_success=exec_result.success
+# ---- Agent 3: Verifier (Run honestly even in generator_only) --
+            with _timer("verifier", iter_latencies):
+                verification = self.verifier.verify(
+                    original_prompt=prompt,
+                    spec=spec,
+                    frame_paths=exec_result.frame_paths,
+                    log_path=exec_result.log_path or "",
+                    exec_success=exec_result.success,
                 )
-                iter_latencies["verifier_s"] = 0.0
-            else:
-                with _timer("verifier", iter_latencies):
-                    verification = self.verifier.verify(
-                        original_prompt=prompt,
-                        spec=spec,
-                        frame_paths=exec_result.frame_paths,
-                        log_path=exec_result.log_path or "",
-                        exec_success=exec_result.success,
-                    )
 
             logger.info(
                 "[%s] iter=%d Verifier: %.2fs → score=%.2f passed=%s missing=%s",
@@ -261,15 +247,12 @@ class PromptToDrivePipeline:
 
             # ---- Exit conditions -------------------------------------------
             if verification.overall_pass:
-                run_record.final_status = "generator_only_no_retry" if mode == "generator_only" else "passed"
+                run_record.final_status = "passed"
                 break
 
             if mode == "generator_only":
-                run_record.final_status = "generator_only_no_retry"
-                break
-
-            if not exec_result.success and iteration == iterations - 1:
-                run_record.final_status = "execution_failed"
+                # Exit immediately after 1 iteration, but keep the real score!
+                run_record.final_status = "generator_only_complete"
                 break
 
             # ---- Agent 4: Reflector (Runs if another iteration is scheduled) --
@@ -298,6 +281,13 @@ class PromptToDrivePipeline:
                     "[%s] iter=%d Reflector: %.2fs",
                     scenario_id, iteration, iter_latencies["reflector_s"],
                 )
+
+            # ---- Mid-Scenario Iteration Memory Safety Flush ----
+            # Ensures VLM VRAM weights and dead client thread actor allocations 
+            # are recycled immediately before the loop increments.
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
         else:
             run_record.final_status = "iteration_limit_reached"

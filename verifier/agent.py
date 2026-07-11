@@ -61,7 +61,7 @@ logger = logging.getLogger("prompt_to_drive.verifier")
 CACHE_PATH = Path(".cache/verifier_cache")
 CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-DEFAULT_THRESHOLD = float(os.getenv("P2D_VERIFICATION_THRESHOLD", "0.72"))
+DEFAULT_THRESHOLD = float(os.getenv("P2D_VERIFICATION_THRESHOLD", "0.75"))
 DEFAULT_N_SAMPLES = int(os.getenv("P2D_VERIFIER_N_SAMPLES", "3"))
 
 # Hybrid score combination weights.

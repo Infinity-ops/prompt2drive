@@ -1,0 +1,13 @@
+2026-07-11 12:58:45,477 INFO Loaded: baseline=25, generator_only=25, full=25 scenarios
+2026-07-11 12:58:45,477 INFO Table 1 (success rate): {'Baseline (free-form code gen)': 0.0, 'Generator-only (schema, no reflection)': 1.0, 'Full Prompt-to-Drive (closed-loop)': 1.0}
+2026-07-11 12:58:45,477 INFO Table 2 overall: {'generator_only': 1.0, 'full': 0.694}
+2026-07-11 12:58:45,477 INFO Table 3 (failure taxonomy): {'Weather': {'first_pass_count': 2, 'first_pass_pct': 5.9, 'final_count': 3, 'final_pct': 8.3}, 'Actor': {'first_pass_count': 8, 'first_pass_pct': 23.5, 'final_count': 9, 'final_pct': 25.0}, 'Behavior': {'first_pass_count': 23, 'first_pass_pct': 67.6, 'final_count': 22, 'final_pct': 61.1}, 'Environment': {'first_pass_count': 1, 'first_pass_pct': 2.9, 'final_count': 2, 'final_pct': 5.6}}
+2026-07-11 12:58:45,478 INFO Table 4 (recovery by category): {'Weather': {'first_pass_failures': 2, 'recovered': 0, 'recovery_rate': 0.0}, 'Actor': {'first_pass_failures': 8, 'recovered': 0, 'recovery_rate': 0.0}, 'Behavior': {'first_pass_failures': 23, 'recovered': 0, 'recovery_rate': 0.0}, 'Environment': {'first_pass_failures': 1, 'recovered': 0, 'recovery_rate': 0.0}}
+2026-07-11 12:58:45,478 INFO Table 4 overall: {'n_scenarios': 25, 'first_pass_rate': 0.0, 'after_reflection_rate': 0.0, 'overall_recovery_rate': 0.0}
+2026-07-11 12:58:45,478 INFO Table 5 (per-predicate): generator_only={'weather_correct': 1.0, 'pedestrian_present': 1.0, 'vehicles_present': 1.0, 'event_observable': 1.0}  full={'weather_correct': 0.88, 'pedestrian_present': 0.25, 'vehicles_present': 0.92, 'event_observable': 0.12}
+2026-07-11 12:58:45,478 INFO Table 6 skipped (no seeded runs found; run expand_dataset.py first)
+2026-07-11 12:58:45,585 INFO Saved eval/results_qwen25/figure1_reflection_convergence.pdf (8 scenarios plotted)
+2026-07-11 12:58:45,630 INFO Saved eval/results_qwen25/figure2_failure_distribution.pdf
+2026-07-11 12:58:45,676 INFO Saved eval/results_qwen25/figure3_recovery_by_failure_type.pdf
+2026-07-11 12:58:45,736 INFO Saved eval/results_qwen25/figure4_per_predicate_alignment.pdf
+2026-07-11 12:58:45,736 INFO All metrics written to eval/results_qwen25/

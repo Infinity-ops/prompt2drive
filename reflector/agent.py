@@ -10,11 +10,11 @@ from __future__ import annotations
 
 import logging
 from typing import Optional, Any
+from pydantic import BaseModel, Field
 from verifier.agent import HybridVerificationResult
 
 logger = logging.getLogger("prompt_to_drive.reflector")
 
-# Master Rule-Based Lookup Table (Serves as your primary backup strategy)
 ELEMENT_CORRECTIONS: dict[str, str] = {
     "traffic_light": (
         "Ensure the scenario uses a town with signalized intersections "
@@ -43,7 +43,6 @@ ELEMENT_CORRECTIONS: dict[str, str] = {
         "(Town01 or Town03 are options). Use spawn_point_index in the 0-5 range for "
         "sidewalk proximity."
     ),
-    "cyclist": "Set cyclist=true and ensure event_type matches the described cyclist behavior.",
     "crossing": (
         "Set event_type='crossing' and pedestrian=true. duration_s must be "
         ">=15s to capture the full crossing arc. Include num_vehicles>=2 "
@@ -62,33 +61,35 @@ ELEMENT_CORRECTIONS: dict[str, str] = {
 }
 
 
+class ReflectionOutputSchema(BaseModel):
+    # Fixed structural footprint: collapsed into a single field to prevent model-side array nesting errors
+    instructions: str = Field(description="A plain text block containing concise, human-readable correction steps for the generator.")
+
+
 class Reflector:
     def __init__(self, backend: Optional[Any] = None):
-        """
-        Initializes the Reflector Agent with a cloud or local text backend instance.
-        If no backend is provided, it defaults immediately to deterministic rules.
-        """
         self.backend = backend
 
     def reflect(
         self,
-        prompt: str,  # Fixed parameter name to align with pipeline caller
+        prompt: str,
         verification_result: HybridVerificationResult,
         iteration: int,
-        preferred_towns: tuple[str, ...] | None = None,
+        preferred_town: tuple[str, ...] | list[str] | str | None = None,
+        preferred_towns: tuple[str, ...] | list[str] | str | None = None,
     ) -> str:
         """
         Builds a refinement context string using either cloud LLM inference or 
-        rule-based backup logic depending on availability and system exceptions.
+        rule-based backup logic. Matches the Generator's structured output interface.
         """
         missing = verification_result.missing_elements
         excess = getattr(verification_result.vlm_result, "excess_elements", None)
         score = verification_result.final_score
-        
-        # Safe dot-notation object property lookup to prevent AttributeError
         notes = getattr(verification_result.vlm_result, "notes", "No additional verifier notes provided.")
 
-        # --- Rule-Based Verification Corrections Assembly ---
+        # Resolve parameter naming ambiguities safely
+        town_data = preferred_towns or preferred_town
+        
         corrections = []
         if missing:
             for e in missing:
@@ -112,11 +113,10 @@ class Reflector:
             excess_notes = f"\nAvoid reintroducing unintended elements from previous attempt: {excess}."
 
         hardware_note = ""
-        if preferred_towns:
-            towns_str = ", ".join(preferred_towns)
+        if town_data:
+            towns_str = ", ".join(town_data) if isinstance(town_data, (tuple, list)) else str(town_data)
             hardware_note = f"\nIMPORTANT: Hardware constraint active. Only use these maps: {towns_str}."
 
-        # --- Pipeline Routing Action ---
         if not self.backend:
             logger.info("No Reflector backend assigned. Executing deterministic rule-based reflection.")
             return self._format_rule_context(iteration, score, missing, notes, corrections, excess_notes, hardware_note)
@@ -125,8 +125,10 @@ class Reflector:
 
         system_prompt = (
             "You are an expert autonomous driving scenario engineer. Your job is to analyze a failed "
-            "simulation run and output explicit instructions for the scenario generator to fix it. "
-            "Keep instructions high-level, action-oriented, and conversational. Do not output code."
+            "simulation run and output explicit instructions for the scenario generator to fix it.\n"
+            "STRICT FORMATTING RULE: The field 'instructions' MUST be a single flat string block (plain text). "
+            "Do NOT write JSON code arrays, do NOT use bullet-point markdown brackets inside the string value, "
+            "and do NOT create lists of dictionaries."
         )
 
         user_content = f"""
@@ -142,16 +144,24 @@ Review the baseline rule corrections for these failures:
 {chr(10).join(corrections)}
 {excess_notes}
 
-Synthesize these insights into a concise, human-like instruction list directing the generator on how to fix the fields.
+Synthesize these insights into a concise, human-like instruction text block directing the generator on how to fix the fields.
         """.strip()
 
         try:
-            # Executes cloud inference (adapts cleanly to both OpenAI wrapper format and local string generation scripts)
-            if hasattr(self.backend, "generate"):
-                response = self.backend.generate(prompt=user_content, system_prompt=system_prompt)
+            if hasattr(self.backend, "generate_structured"):
+                parsed = self.backend.generate_structured(
+                    system_prompt=system_prompt,
+                    user_prompt=user_content,
+                    schema=ReflectionOutputSchema,
+                )
+                response = parsed.instructions
             else:
-                # Fallback implementation if the api wrapper uses a basic call signature
-                response = self.backend(f"{system_prompt}\n\n{user_content}")
+                if hasattr(self.backend, "generate_text"):
+                    response = self.backend.generate_text(system_prompt=system_prompt, user_prompt=user_content)
+                elif hasattr(self.backend, "generate"):
+                    response = self.backend.generate(system_prompt=system_prompt, user_prompt=user_content)
+                else:
+                    response = self.backend(f"{system_prompt}\n\n{user_content}")
 
             return f"""[LLM REFLECTION -- iteration {iteration}]
 Previous score: {score:.2f}
@@ -167,7 +177,6 @@ Apply all adjustments above. Preserve fields not implicated in errors.""".strip(
         self, iteration: int, score: float, missing: list[str], notes: str, 
         corrections: list[str], excess_notes: str, hardware_note: str
     ) -> str:
-        """Helper method to format the rule-based backup block identically to old script requirements."""
         affected_fields = sorted({e.split("_")[0] for e in missing}) if missing else ["all fields"]
         
         return f"""[RULE REFLECTION -- iteration {iteration}]
@@ -182,13 +191,19 @@ Apply all corrections above. Preserve any field NOT implicated in the missing-el
 Fields most likely needing adjustment: {", ".join(affected_fields)}.""".strip()
 
 
-# Main operational interface entry point mapped exactly to eval/run_full_evaluation.py
 def reflect(
-    prompt: str,  # Fixed wrapper positional name
+    prompt: str,
     verification_result: HybridVerificationResult,
     iteration: int,
-    preferred_towns: tuple[str, ...] | None = None,
+    preferred_town: tuple[str, ...] | list[str] | str | None = None,
+    preferred_towns: tuple[str, ...] | list[str] | str | None = None,
     backend: Optional[Any] = None,
 ) -> str:
     agent = Reflector(backend=backend)
-    return agent.reflect(prompt, verification_result, iteration, preferred_towns)
+    return agent.reflect(
+        prompt=prompt,
+        verification_result=verification_result,
+        iteration=iteration,
+        preferred_town=preferred_town,
+        preferred_towns=preferred_towns,
+    )
