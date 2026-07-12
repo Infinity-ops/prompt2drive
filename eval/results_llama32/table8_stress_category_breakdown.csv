@@ -1,0 +1,7 @@
+stress_category,baseline_score,generator_only_score,full_closed_loop_score
+dense_multi_actor,nan,0.722,nan
+long_range_small_object,nan,1.0,nan
+low_light_low_reaction_time,nan,0.667,nan
+low_visibility,nan,0.722,nan
+occlusion,nan,0.792,nan
+sensor_glare,nan,0.583,nan

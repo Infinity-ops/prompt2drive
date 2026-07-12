@@ -1,0 +1,5 @@
+failure_category,first_pass_count,first_pass_pct,final_count,final_pct
+Weather,0,0.0,0,0.0
+Actor,7,36.8,7,46.7
+Behavior,6,31.6,4,26.7
+Environment,6,31.6,4,26.7

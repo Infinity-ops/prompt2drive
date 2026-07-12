@@ -1,0 +1,4 @@
+dataset_split,n_scenarios,mean_score,std_dev
+low_stress_scenarios,25,1.0,0.0
+hard_stress_scenarios,0,0.0,0.0
+performance_gap_mean,-,0.0,-

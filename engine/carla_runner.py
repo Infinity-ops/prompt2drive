@@ -52,6 +52,7 @@ class CarlaRunner:
         self._client = None
         self._world = None
         self._tm = None 
+        self.captured_frames: dict[int, any] = {}
 
     def connect(self):
         import carla
@@ -211,7 +212,10 @@ class CarlaRunner:
             ego_vehicle.set_autopilot(True, TM_PORT)
             
             # SAFEGUARD: Ensure Traffic Manager drives at standard operational speed limits
-            self._tm.set_desired_speed(ego_vehicle, 30.0) 
+            try:
+                self._tm.vehicle_percentage_speed_difference(ego_vehicle, 0.0)
+            except Exception as tm_err:
+                logger.warning("[%s] Failed to set TrafficManager speed safeguard: %s", scenario_id, tm_err)
 
             # ---- Step 5: Camera Setup ----
             camera_bp = blueprint_library.find("sensor.camera.rgb")
@@ -220,13 +224,13 @@ class CarlaRunner:
             camera_transform = carla.Transform(carla.Location(x=-5.5, z=2.8), carla.Rotation(pitch=-15))
             camera = self._world.spawn_actor(camera_bp, camera_transform, attach_to=ego_vehicle)
 
-            captured_frames: dict[int, carla.Image] = {}
+            self.captured_frames = {}
             def _on_image(image):
                 if not callback_active: return
                 try:
-                    captured_frames[image.frame] = image
-                    if len(captured_frames) > 20:
-                        del captured_frames[min(captured_frames.keys())]
+                    self.captured_frames[image.frame] = image
+                    if len(self.captured_frames) > 20:
+                        del self.captured_frames[min(self.captured_frames.keys())]
                 except Exception: pass
             camera.listen(_on_image)
 
@@ -241,9 +245,13 @@ class CarlaRunner:
                 if spawned_count >= spec.num_vehicles:
                     break
                 bp = random.choice(vehicle_bps)
+                
+                # FIX: Set a random color safely without calling recommend_values
                 if bp.has_attribute('color'):
-                    color = random.choice(bp.get_attribute('color').recommend_values)
-                    bp.set_attribute('color', color)
+                    r = random.randint(0, 255)
+                    g = random.randint(0, 255)
+                    b = random.randint(0, 255)
+                    bp.set_attribute('color', f"{r},{g},{b}")
                 
                 npc_v = self._world.try_spawn_actor(bp, sp)
                 if npc_v is not None:
@@ -271,7 +279,6 @@ class CarlaRunner:
                     npc_list.append(blocker_v)
                     state_log["actors"].append({"type": "blocking_truck", "id": blocker_v.id})
                     
-                    # Prevent Traffic Manager from stopping completely before encountering the visibility occlusion point
                     self._tm.ignore_vehicles_percentage(ego_vehicle, 100.0)
 
             state_log["vehicle_count"] = len(npc_list)
@@ -322,11 +329,11 @@ class CarlaRunner:
                 if t % capture_every == 0:
                     frame_id = self._world.get_snapshot().frame
                     for _ in range(30):
-                        if frame_id in captured_frames: break
+                        if frame_id in self.captured_frames: break
                         time.sleep(0.02)
 
-                    if frame_id in captured_frames:
-                        img = captured_frames[frame_id]
+                    if frame_id in self.captured_frames:
+                        img = self.captured_frames[frame_id]
                         fp = frames_dir / f"frame_{len(saved_frames):03d}.png"
                         try:
                             img.save_to_disk(str(fp))
@@ -351,6 +358,7 @@ class CarlaRunner:
 
         except Exception as exc:
             state_log["errors"].append(str(exc))
+            logger.error("[%s] Simulation engine crashed: %s\n%s", scenario_id, exc, traceback.format_exc())
             log_path = out / "state_log.json"
             with open(log_path, "w") as f:
                 json.dump(state_log, f, indent=2)

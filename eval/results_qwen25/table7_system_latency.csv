@@ -1,0 +1,6 @@
+metric,seconds
+avg_generator_s,0.04
+avg_engine_s,3.63
+avg_verifier_s,2.14
+avg_reflector_s,0.07
+avg_wall_time_s,5.88
