@@ -1,14 +1,3 @@
-"""
-eval/run_baseline.py
-
-Runs the 20-scenario dataset through the NAIVE baseline: direct, free-form
-LLM code generation with no schema constraint and no verification loop.
-This is the comparator condition for Experiment 1 (executable scenario
-success rate) and Experiment 2 (semantic alignment).
-
-Usage:
-    python -m eval.run_baseline --dataset scenarios/dataset.json --out outputs/baseline
-"""
 from __future__ import annotations
 
 # --- FORCE LOAD ENVIRONMENT FIRST ---
@@ -32,7 +21,6 @@ import subprocess
 import sys
 import time
 import traceback
-from pathlib import Path
 from typing import Optional
 
 from backends.llm_backend import TextBackend
@@ -41,12 +29,26 @@ from generator.agent import generate_baseline_code
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("prompt_to_drive.eval.baseline")
 
-CARLA_BOILERPLATE = """
-import carla
+# Expanded boilerplate to include primitive modules required by common LLM-generated code
+CARLA_BOILERPLATE = """import carla
+import json
+import math
+import random
+import time
+
 client = carla.Client('localhost', 2000)
 client.set_timeout(10.0)
 world = client.get_world()
 """
+
+
+def sanitize_and_clean_fences(generated_code: str) -> str:
+    """Removes markdown backticks and fences if the baseline LLM wrapped its output."""
+    sanitized_lines = []
+    for line in generated_code.splitlines():
+        if not line.strip().startswith("```"):
+            sanitized_lines.append(line)
+    return "\n".join(sanitized_lines).strip()
 
 
 def run_one(prompt: str, scenario_id: str, out_dir: Path, backend: Optional[TextBackend] = None, backend_name: str = "openai") -> dict:
@@ -55,11 +57,11 @@ def run_one(prompt: str, scenario_id: str, out_dir: Path, backend: Optional[Text
 
     try:
         # Generate target code using the proper framework backend pipeline
-        code = generate_baseline_code(prompt, backend=backend)
+        raw_code = generate_baseline_code(prompt, backend=backend)
 
-        # Strip markdown fences if present
-        code = code.replace("```python", "").replace("```", "").strip()
-        full_script = CARLA_BOILERPLATE + "\n" + code
+        # Sanitize markdown ticks and cleanly combine with extended boilerplate
+        clean_code = sanitize_and_clean_fences(raw_code)
+        full_script = CARLA_BOILERPLATE + "\n\n" + clean_code
 
         script_path = out_dir / "generated.py"
         script_path.write_text(full_script)
@@ -70,8 +72,8 @@ def run_one(prompt: str, scenario_id: str, out_dir: Path, backend: Optional[Text
             capture_output=True, text=True, timeout=60,
         )
         record["execution_success"] = proc.returncode == 0
-        record["stdout"] = proc.stdout[-2000:]
-        record["stderr"] = proc.stderr[-2000:]
+        record["stdout"] = proc.stdout[-2000:] if proc.stdout else ""
+        record["stderr"] = proc.stderr[-2000:] if proc.stderr else ""
         record["wall_time_s"] = round(time.time() - t0, 2)
 
     except Exception as exc:  # noqa: BLE001

@@ -206,8 +206,7 @@ class PromptToDrivePipeline:
                 exec_result.success, len(exec_result.frame_paths),
             )
 
-            # ---- Agent 3: Verifier (Short-circuited in generator_only mode) --
-# ---- Agent 3: Verifier (Run honestly even in generator_only) --
+            # ---- Agent 3: Verifier (Run honestly even in generator_only) ---
             with _timer("verifier", iter_latencies):
                 verification = self.verifier.verify(
                     original_prompt=prompt,
@@ -251,7 +250,7 @@ class PromptToDrivePipeline:
                 break
 
             if mode == "generator_only":
-                # Exit immediately after 1 iteration, but keep the real score!
+                # Exit immediately after 1 iteration, keeping the real evaluation scores!
                 run_record.final_status = "generator_only_complete"
                 break
 
@@ -283,8 +282,151 @@ class PromptToDrivePipeline:
                 )
 
             # ---- Mid-Scenario Iteration Memory Safety Flush ----
-            # Ensures VLM VRAM weights and dead client thread actor allocations 
-            # are recycled immediately before the loop increments.
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+        else:
+            run_record.final_status = "iteration_limit_reached"
+
+        # ---- Aggregate systems metrics over lifecycle --------------------
+        run_record.total_wall_time_s = round(time.perf_counter() - t0_total, 2)
+        run_record.total_generator_s  = round(sum(it.latencies.generator_s for it in run_record.iterations), 4)
+        run_record.total_engine_s     = round(sum(it.latencies.engine_s for it in run_record.iterations), 4)
+        run_record.total_verifier_s   = round(sum(it.latencies.verifier_s for it in run_record.iterations), 4)
+        run_record.total_reflector_s  = round(sum(it.latencies.reflector_s for it in run_record.iterations), 4)
+        run_record.peak_memory_mb     = max((it.peak_memory_mb for it in run_record.iterations), default=0.0)
+
+        # ---- Print aggregate telemetry summary ---------------------------
+        logger.info(
+            "[%s] DONE status=%s | wall=%.1fs | gen=%.1fs eng=%.1fs ver=%.1fs ref=%.1fs | mem=%.0fMB",
+            scenario_id, run_record.final_status, run_record.total_wall_time_s,
+            run_record.total_generator_s, run_record.total_engine_s,
+            run_record.total_verifier_s, run_record.total_reflector_s, run_record.peak_memory_mb,
+        )
+
+        self._persist(run_record)
+        return run_record
+
+    def run_with_pregenerated_spec(self, prompt: str, scenario_id: str, spec: ScenarioSpec, 
+                                   mode: str = "full", rng_seed: Optional[int] = None) -> PipelineRun:
+        """
+        Executes Phase B of the topology-sorted pipeline. Runs the CARLA simulation engine, 
+        verifier, and subsequent reflection loops utilizing a pre-built ScenarioSpec allocation.
+        """
+        t0_total = time.perf_counter()
+        run_record = PipelineRun(scenario_id=scenario_id, prompt=prompt, mode=mode)
+        refinement_context = ""
+        iterations = 1 if mode == "generator_only" else self.max_iterations
+
+        for iteration in range(iterations):
+            iter_latencies: dict = {}
+            iter_t0 = time.perf_counter()
+
+            # ---- Agent 1: Generator (Skipped on initial loop, runs on Reflected cycles) ----
+            if iteration == 0:
+                iter_latencies["generator_s"] = 0.0
+                current_spec = spec 
+            else:
+                with _timer("generator", iter_latencies):
+                    current_spec = self.generator.generate(
+                        prompt, refinement_context=refinement_context
+                    )
+                logger.info(
+                    "[%s] iter=%d Generator: %.2fs → town=%s weather=%s event=%s",
+                    scenario_id, iteration, iter_latencies["generator_s"],
+                    current_spec.town, current_spec.weather, current_spec.event_type,
+                )
+
+            # ---- Agent 2: CARLA Engine -------------------------------------
+            iter_dir = self.output_root / scenario_id / f"iter_{iteration}"
+            with _timer("engine", iter_latencies):
+                exec_result: ExecutionResult = self.runner.run(
+                    current_spec,
+                    scenario_id=f"{scenario_id}_iter{iteration}",
+                    output_dir=str(iter_dir),
+                    rng_seed=rng_seed,
+                )
+
+            logger.info(
+                "[%s] iter=%d Engine: %.2fs → success=%s frames=%d",
+                scenario_id, iteration, iter_latencies["engine_s"],
+                exec_result.success, len(exec_result.frame_paths),
+            )
+
+            # ---- Agent 3: Verifier -----------------------------------------
+            with _timer("verifier", iter_latencies):
+                verification = self.verifier.verify(
+                    original_prompt=prompt,
+                    spec=current_spec,
+                    frame_paths=exec_result.frame_paths,
+                    log_path=exec_result.log_path or "",
+                    exec_success=exec_result.success,
+                )
+
+            logger.info(
+                "[%s] iter=%d Verifier: %.2fs → score=%.2f passed=%s missing=%s",
+                scenario_id, iteration, iter_latencies["verifier_s"],
+                verification.final_score, verification.overall_pass, verification.missing_elements,
+            )
+
+            # ---- Reflector latency initialization slot --------------------
+            iter_latencies["reflector_s"] = 0.0
+
+            # ---- Capture system metrics ------------------------------------
+            mem_mb = _peak_memory_mb()
+            iter_latencies["total_pipeline_s"] = round(time.perf_counter() - iter_t0, 4)
+
+            # ---- Record current iteration ----------------------------------
+            run_record.iterations.append(
+                IterationRecord(
+                    iteration=iteration,
+                    spec=current_spec.model_dump(),
+                    refinement_context=refinement_context or None,
+                    execution_success=exec_result.success,
+                    verification_score=verification.final_score,
+                    verification_passed=verification.overall_pass,
+                    missing_elements=verification.missing_elements,
+                    latencies=AgentLatencies(**iter_latencies),
+                    peak_memory_mb=mem_mb,
+                )
+            )
+
+            # ---- Exit conditions -------------------------------------------
+            if verification.overall_pass:
+                run_record.final_status = "passed"
+                break
+
+            if mode == "generator_only":
+                run_record.final_status = "generator_only_complete"
+                break
+
+            # ---- Agent 4: Reflector ----------------------------------------
+            if iteration < iterations - 1:
+                with _timer("reflector", iter_latencies):
+                    if self.reflector and hasattr(self.reflector, "reflect"):
+                        refinement_context = self.reflector.reflect(
+                            prompt=prompt,
+                            verification_result=verification,
+                            iteration=iteration + 1,
+                            preferred_town=self.preferred_towns
+                        )
+                    else:
+                        refinement_context = reflect(
+                            prompt,
+                            verification,
+                            iteration + 1,
+                            preferred_town=self.preferred_towns,
+                            backend=self.reflector_backend
+                        )
+                        
+                run_record.iterations[-1].latencies.reflector_s = iter_latencies["reflector_s"]
+                logger.info(
+                    "[%s] iter=%d Reflector: %.2fs",
+                    scenario_id, iteration, iter_latencies["reflector_s"],
+                )
+
+            # ---- Mid-Scenario Iteration Memory Safety Flush ----
             gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()

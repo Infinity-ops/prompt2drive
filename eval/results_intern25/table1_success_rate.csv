@@ -1,4 +1,0 @@
-condition,success_rate
-Baseline (free-form code gen),0.000
-Generator-only (schema, no reflection),1.000
-Full Prompt-to-Drive (closed-loop),1.000

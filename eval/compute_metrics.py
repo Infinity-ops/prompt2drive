@@ -1,65 +1,24 @@
 """
 eval/compute_metrics.py
 
-Computes all tables and figures for the Prompt-to-Drive paper.
+Computes all tables and figures for the Prompt-to-Drive paper, updated to fully
+account for grounded stress-test conditions and multi-actor validation metrics.
 
 TABLES
 ------
 Table 1 -- Executable success rate, by condition
 Table 2 -- Semantic alignment (predicate agreement), by condition + breakdown
 Table 3 -- Failure Taxonomy: per-category failure count and percentage
-           (Weather / Actor / Behavior / Environment)
-           THIS IS THE TABLE THE REVIEWER SPECIFICALLY ASKED FOR.
-           It is computed directly from failed_predicates in each pipeline_run.json.
-           No new data collection needed -- it is latent in the existing output.
-Table 4 -- Reflection Recovery by Failure Category: what fraction of each
-           failure type is repaired by the Reflector across iterations.
-Table 5 -- Per-predicate alignment breakdown (weather / actors / behavior / environment)
-           "Behavioral predicates remain the dominant source of semantic errors
-            despite high environmental consistency." -- this is the scientific claim.
-Table 6 -- Seed variance / CI (only if expanded dataset was used)
-
-FIGURES
--------
-Figure 1 -- Reflection convergence: predicate agreement by iteration (initially-failing scenarios)
-Figure 2 -- Failure distribution: bar chart of failure categories
-Figure 3 -- Recovery by failure type: bar chart
-Figure 4 -- Semantic alignment by difficulty level
-
-PREDICATE → FAILURE CATEGORY MAPPING
---------------------------------------
-This mapping is the core of the failure taxonomy. It lives here, not scattered
-across the project, per the reviewer's recommendation.
-
-  weather_correct   → Weather Failure   (wrong atmospheric condition rendered)
-  pedestrian_present → Actor Failure    (requested actor missing from scene)
-  vehicles_present  → Environment Failure (scene density / context wrong)
-  event_observable  → Behavior Failure  (the driving event did not occur / was not visible)
-
-Usage:
-    python -m eval.compute_metrics \\
-        --baseline  outputs/baseline/baseline_results.json \\
-        --generator-only outputs/generator_only \\
-        --full outputs/full \\
-        --dataset scenarios/dataset.json \\
-        --out eval/results
-
-Outputs (all in --out directory):
-    table1_success_rate.csv
-    table2_semantic_alignment.csv
-    table3_failure_taxonomy.csv
-    table4_reflection_recovery_by_category.csv
-    table5_per_predicate_alignment.csv
-    table6_seed_variance.csv  (only if seeded dataset used)
-    figure1_reflection_convergence.pdf
-    figure2_failure_distribution.pdf
-    figure3_recovery_by_failure_type.pdf
-    figure4_difficulty_breakdown.pdf
-    summary.json
+Table 4 -- Reflection Recovery by Failure Category
+Table 5 -- Per-predicate alignment breakdown
+Table 6 -- Stress Split Variance / Performance Gap (Updated for non-expanded dataset)
+Table 7 -- System Latency Breakdown
+Table 8 -- Stress Benchmark Alignment Breakdown by Challenge Category (New)
 """
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import logging
 import math
@@ -68,31 +27,27 @@ from collections import defaultdict
 from pathlib import Path
 
 import matplotlib
-matplotlib.use("Agg")
+matplotlib.use("Agg")  # No GUI environment required
 import matplotlib.pyplot as plt
 import numpy as np
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("prompt_to_drive.eval.metrics")
 
-# -----------------------------------------------------------------------
-# Predicate → Failure Category mapping (reviewer's taxonomy)
-# "The taxonomy is latent in your code. You're simply not exposing it."
-# -----------------------------------------------------------------------
+# Map the newly introduced stress-test failure conditions to their categories
 PREDICATE_TO_CATEGORY = {
-    "weather_correct":    "Weather",
-    "pedestrian_present": "Actor",
-    "vehicles_present":   "Environment",
-    "event_observable":   "Behavior",
+    "weather_correct":           "Weather",
+    "fog_density_violation":     "Weather",   # Added for extreme weather stress evaluations
+    "pedestrian_present":        "Actor",
+    "sightline_occlusion_error": "Actor",     # Added for blocking truck visibility stress evaluations
+    "vehicles_present":          "Environment",
+    "event_observable":          "Behavior",
 }
 
 ALL_CATEGORIES = ["Weather", "Actor", "Behavior", "Environment"]
 ALL_PREDICATES = list(PREDICATE_TO_CATEGORY.keys())
 
 
-# -----------------------------------------------------------------------
-# Data loading
-# -----------------------------------------------------------------------
 def _load_pipeline_runs(out_dir: str) -> dict[str, dict]:
     runs = {}
     root = Path(out_dir)
@@ -100,8 +55,11 @@ def _load_pipeline_runs(out_dir: str) -> dict[str, dict]:
         logger.warning("Directory %s does not exist; skipping.", out_dir)
         return runs
     for run_file in root.glob("*/pipeline_run.json"):
-        data = json.loads(run_file.read_text())
-        runs[data["scenario_id"]] = data
+        try:
+            data = json.loads(run_file.read_text())
+            runs[data["scenario_id"]] = data
+        except Exception as e:
+            logger.error("Failed to load pipeline run file %s: %s", run_file, e)
     return runs
 
 
@@ -110,8 +68,14 @@ def _load_baseline(baseline_path: str) -> dict[str, dict]:
     if not p.exists():
         logger.warning("Baseline file %s not found; skipping.", baseline_path)
         return {}
-    results = json.loads(p.read_text())
-    return {r["scenario_id"]: r for r in results}
+    try:
+        data = json.loads(p.read_text())
+        if isinstance(data, list):
+            return {r["scenario_id"]: r for r in data}
+        return data
+    except Exception as e:
+        logger.error("Failed to load baseline file %s: %s", baseline_path, e)
+        return {}
 
 
 def _last_iter(run: dict) -> dict | None:
@@ -119,534 +83,475 @@ def _last_iter(run: dict) -> dict | None:
     return its[-1] if its else None
 
 
-def _first_iter(run: dict) -> dict | None:
-    its = run.get("iterations", [])
-    return its[0] if its else None
-
-
-# -----------------------------------------------------------------------
-# Table 1: Executable success rate
-# -----------------------------------------------------------------------
 def table1_success_rate(baseline: dict, generator_only: dict, full: dict) -> dict:
     def exec_rate(runs: dict) -> float:
         if not runs:
             return float("nan")
-        return sum(1 for r in runs.values()
-                   if any(it["execution_success"] for it in r.get("iterations", []))) / len(runs)
+        success_count = sum(1 for r in runs.values() if any(it.get("execution_success", False) for it in r.get("iterations", [])))
+        return success_count / len(runs)
 
     def baseline_rate(b: dict) -> float:
         if not b:
             return float("nan")
-        return sum(1 for r in b.values() if r.get("execution_success")) / len(b)
+        return sum(1 for r in b.values() if r.get("execution_success", False)) / len(b)
 
     return {
-        "Baseline (free-form code gen)":              round(baseline_rate(baseline), 3),
+        "Baseline (free-form code gen)":             round(baseline_rate(baseline), 3),
         "Generator-only (schema, no reflection)":     round(exec_rate(generator_only), 3),
-        "Full Prompt-to-Drive (closed-loop)":         round(exec_rate(full), 3),
+        "Full Prompt-to-Drive (closed-loop)":          round(exec_rate(full), 3),
     }
 
 
-# -----------------------------------------------------------------------
-# Table 2: Semantic alignment by condition and breakdown
-# -----------------------------------------------------------------------
 def table2_semantic_alignment(generator_only: dict, full: dict, dataset: dict) -> dict:
     by_id = {s["id"]: s for s in dataset["scenarios"]}
 
     def mean_agreement(runs: dict) -> float:
-        scores = [_last_iter(r)["verification_score"]
-                  for r in runs.values() if _last_iter(r)]
+        scores = []
+        for r in runs.values():
+            li = _last_iter(r)
+            if li and "verification_score" in li:
+                scores.append(li["verification_score"])
         return round(statistics.fmean(scores), 3) if scores else float("nan")
 
     def breakdown(runs: dict, field: str) -> dict[str, float]:
         buckets: dict[str, list[float]] = defaultdict(list)
         for sid, run in runs.items():
-            meta = by_id.get(sid.split("_seed")[0], {})
+            core_id = sid.split("_seed")[0]
+            meta = by_id.get(core_id, {})
             key = str(meta.get(field, "unknown"))
             li = _last_iter(run)
-            if li:
+            if li and "verification_score" in li:
                 buckets[key].append(li["verification_score"])
         return {k: round(statistics.fmean(v), 3) for k, v in sorted(buckets.items())}
 
     return {
         "overall": {
             "generator_only": mean_agreement(generator_only),
-            "full":           mean_agreement(full),
+            "full": mean_agreement(full)
         },
         "by_difficulty": {
             "generator_only": breakdown(generator_only, "difficulty"),
-            "full":           breakdown(full, "difficulty"),
+            "full": breakdown(full, "difficulty")
         },
         "by_weather": {
             "generator_only": breakdown(generator_only, "expected_weather"),
-            "full":           breakdown(full, "expected_weather"),
+            "full": breakdown(full, "expected_weather")
         },
         "by_event": {
             "generator_only": breakdown(generator_only, "expected_event"),
-            "full":           breakdown(full, "expected_event"),
+            "full": breakdown(full, "expected_event")
         },
     }
 
 
-# -----------------------------------------------------------------------
-# Table 3: Failure Taxonomy
-# "The taxonomy is latent in your code. You're simply not exposing it."
-#
-# Counts each predicate failure across ALL iterations of ALL scenarios,
-# then maps to failure category. Reports count + percentage.
-# -----------------------------------------------------------------------
-def table3_failure_taxonomy(full: dict) -> dict:
-    """
-    For each scenario's FIRST iteration (before reflection), count how many
-    times each predicate failed. This gives the raw failure distribution
-    BEFORE the Reflector has had a chance to act -- the baseline failure
-    profile of the Generator + Engine alone.
-
-    Reports both:
-      - first_pass_failures: failures at iteration 0 (pre-reflection)
-      - final_failures:      failures at final iteration (post-reflection)
-    """
-    first_pass_counts: dict[str, int] = defaultdict(int)
-    final_counts: dict[str, int] = defaultdict(int)
+def compute_true_failure_and_recovery(full: dict) -> tuple[dict, dict]:
+    first_pass_counts = defaultdict(int)
+    final_counts = defaultdict(int)
+    first_failed_sids = defaultdict(set)
+    recovered_counts = defaultdict(int)
     n_scenarios = 0
 
-    for run in full.values():
+    for sid, run in full.items():
         iters = run.get("iterations", [])
         if not iters:
             continue
         n_scenarios += 1
 
-        # First pass failures (iteration 0)
-        first = iters[0]
-        for pred in first.get("missing_elements", []):
-            cat = PREDICATE_TO_CATEGORY.get(pred, "Unknown")
-            first_pass_counts[cat] += 1
+        first_missing = set(iters[0].get("missing_elements", []))
+        final_missing = set(iters[-1].get("missing_elements", []))
 
-        # Final iteration failures
-        last = iters[-1]
-        for pred in last.get("missing_elements", []):
-            cat = PREDICATE_TO_CATEGORY.get(pred, "Unknown")
+        for pred in first_missing:
+            cat = PREDICATE_TO_CATEGORY.get(pred, "Environment")
+            first_pass_counts[cat] += 1
+            first_failed_sids[cat].add(sid)
+
+        for pred in final_missing:
+            cat = PREDICATE_TO_CATEGORY.get(pred, "Environment")
             final_counts[cat] += 1
+
+        for pred in first_missing:
+            cat = PREDICATE_TO_CATEGORY.get(pred, "Environment")
+            if pred not in final_missing:
+                recovered_counts[cat] += 1
 
     total_first = sum(first_pass_counts.values()) or 1
     total_final = sum(final_counts.values()) or 1
 
     taxonomy = {}
+    recovery = {}
+
     for cat in ALL_CATEGORIES:
-        fp = first_pass_counts.get(cat, 0)
-        fn = final_counts.get(cat, 0)
+        fp = first_pass_counts[cat]
+        fn = final_counts[cat]
+        rec = recovered_counts[cat]
+        ff_len = len(first_failed_sids[cat])
+
         taxonomy[cat] = {
-            "first_pass_count":      fp,
-            "first_pass_pct":        round(100 * fp / total_first, 1),
-            "final_count":           fn,
-            "final_pct":             round(100 * fn / total_final, 1),
+            "first_pass_count": fp,
+            "first_pass_pct":   round(100 * fp / total_first, 1),
+            "final_count":      fn,
+            "final_pct":        round(100 * fn / total_final, 1)
         }
+        recovery[cat] = {
+            "first_pass_failures": ff_len,
+            "recovered":           rec,
+            "recovery_rate":       round(rec / ff_len, 3) if ff_len > 0 else float("nan")
+        }
+
+    first_pass_passes = sum(1 for r in full.values() if r.get("iterations", [{}])[0].get("verification_passed", False))
+    final_passes = sum(1 for r in full.values() if r.get("iterations", [{}])[-1].get("verification_passed", False))
 
     taxonomy["_meta"] = {
         "n_scenarios": n_scenarios,
         "total_first_pass_failures": total_first,
-        "total_final_failures": total_final,
-        "note": (
-            "first_pass = failures at iteration 0 before Reflector acts; "
-            "final = failures remaining after all reflection iterations."
-        ),
+        "total_final_failures": total_final
     }
-    return taxonomy
-
-
-# -----------------------------------------------------------------------
-# Table 4: Reflection Recovery by Failure Category
-# "For each failure type, what fraction does the Reflector repair?"
-# -----------------------------------------------------------------------
-def table4_reflection_recovery_by_category(full: dict) -> dict:
-    """
-    For each failure category:
-      - count how many scenarios had that category fail at iteration 0
-      - count how many of those scenarios passed at their final iteration
-      - recovery_rate = recovered / first_failed
-
-    Also reports overall first_pass_rate, after_reflection_rate, recovery_rate.
-    """
-    # Per-category tracking
-    first_failed: dict[str, list[str]] = defaultdict(list)   # category -> [scenario_ids]
-    final_passed_given_first_failed: dict[str, int] = defaultdict(int)
-
-    first_pass_passes = 0
-    final_passes = 0
-    n = 0
-
-    for sid, run in full.items():
-        iters = run.get("iterations", [])
-        if not iters:
-            continue
-        n += 1
-
-        first = iters[0]
-        last = iters[-1]
-
-        if first.get("verification_passed"):
-            first_pass_passes += 1
-        if last.get("verification_passed"):
-            final_passes += 1
-
-        # Which categories failed at iteration 0?
-        cats_failed_first = set()
-        for pred in first.get("missing_elements", []):
-            cat = PREDICATE_TO_CATEGORY.get(pred, "Unknown")
-            cats_failed_first.add(cat)
-            first_failed[cat].append(sid)
-
-        # Did this scenario recover by the final iteration?
-        recovered = last.get("verification_passed", False)
-        for cat in cats_failed_first:
-            if recovered:
-                final_passed_given_first_failed[cat] += 1
-
-    recovery: dict[str, dict] = {}
-    for cat in ALL_CATEGORIES:
-        ff = len(first_failed[cat])
-        rec = final_passed_given_first_failed.get(cat, 0)
-        recovery[cat] = {
-            "first_pass_failures": ff,
-            "recovered":           rec,
-            "recovery_rate":       round(rec / ff, 3) if ff > 0 else float("nan"),
-        }
-
+    
     recovery["_overall"] = {
-        "n_scenarios":            n,
-        "first_pass_rate":        round(first_pass_passes / n, 3) if n else float("nan"),
-        "after_reflection_rate":  round(final_passes / n, 3) if n else float("nan"),
-        "overall_recovery_rate":  (
-            round((final_passes - first_pass_passes) /
-                  (n - first_pass_passes), 3)
-            if n > first_pass_passes else float("nan")
-        ),
+        "n_scenarios":           n_scenarios,
+        "first_pass_rate":       round(first_pass_passes / n_scenarios, 3) if n_scenarios else float("nan"),
+        "after_reflection_rate": round(final_passes / n_scenarios, 3) if n_scenarios else float("nan"),
+        "overall_recovery_rate": round((final_passes - first_pass_passes) / (n_scenarios - first_pass_passes), 3) if n_scenarios > first_pass_passes else float("nan")
     }
-    return recovery
+
+    return taxonomy, recovery
 
 
-# -----------------------------------------------------------------------
-# Table 5: Per-predicate alignment breakdown
-# "Weather 0.98 / Actors 0.81 / Behavior 0.73 / Environment 0.95"
-# This is an actual scientific observation.
-# -----------------------------------------------------------------------
-def table5_per_predicate_alignment(full: dict, generator_only: dict) -> dict:
-    """
-    For each predicate, compute the fraction of APPLICABLE scenarios where
-    it held at the FINAL iteration. Reports separately for generator_only
-    and full conditions so the per-predicate improvement from reflection
-    is visible.
-    """
-    def compute(runs: dict) -> dict[str, dict]:
-        pred_held: dict[str, list[bool]] = defaultdict(list)
-        for run in runs.values():
+def table5_per_predicate_alignment(generator_only: dict, full: dict, dataset: dict) -> dict:
+    by_id = {s["id"]: s for s in dataset["scenarios"]}
+
+    def compute_condition(runs: dict) -> dict[str, dict]:
+        pred_held = defaultdict(list)
+        for sid, run in runs.items():
             li = _last_iter(run)
             if not li:
                 continue
+            
+            core_id = sid.split("_seed")[0]
+            gt_meta = by_id.get(core_id, {})
             missing = set(li.get("missing_elements", []))
-            spec = li.get("spec", {})
-            # Determine applicability from spec fields
+
+            # FIXED: Set explicit dictionary evaluation logic safely checking keys instead of using hasattr()
             applicable = {
-                "weather_correct":    True,
-                "pedestrian_present": bool(spec.get("pedestrian", False)),
-                "vehicles_present":   int(spec.get("num_vehicles", 0)) > 0,
-                "event_observable":   True,
+                "weather_correct":           True,
+                "fog_density_violation":     "fog_density" in gt_meta or "fog" in gt_meta.get("expected_weather", "").lower(),
+                "pedestrian_present":        gt_meta.get("pedestrian", False) or gt_meta.get("ground_truth_predicates", {}).get("pedestrian_present", False),
+                "sightline_occlusion_error": gt_meta.get("blocking_actor", False) or "occlusion" in gt_meta.get("stress_category", "").lower(),
+                "vehicles_present":          gt_meta.get("num_vehicles", 0) > 0 or gt_meta.get("ground_truth_predicates", {}).get("vehicles_present", True),
+                "event_observable":          True
             }
+
             for pred, app in applicable.items():
                 if app:
                     pred_held[pred].append(pred not in missing)
 
-        result = {}
-        for pred in ALL_PREDICATES:
-            vals = pred_held.get(pred, [])
-            cat = PREDICATE_TO_CATEGORY[pred]
-            result[pred] = {
-                "category":    cat,
-                "n_applicable": len(vals),
-                "pass_rate":   round(statistics.fmean(vals), 3) if vals else float("nan"),
-            }
-        return result
+        return {
+            pred: {
+                "category":     PREDICATE_TO_CATEGORY[pred],
+                "n_applicable": len(pred_held[pred]),
+                "pass_rate":    round(statistics.fmean(pred_held[pred]), 3) if pred_held[pred] else float("nan")
+            } for pred in ALL_PREDICATES
+        }
 
-    return {
-        "generator_only": compute(generator_only),
-        "full":           compute(full),
-    }
+    return {"generator_only": compute_condition(generator_only), "full": compute_condition(full)}
 
 
-# -----------------------------------------------------------------------
-# Table 6: Seed variance / CI (only for expanded datasets)
-# -----------------------------------------------------------------------
-def table6_seed_variance(full: dict) -> dict:
-    by_core: dict[str, list[float]] = defaultdict(list)
-    for sid, run in full.items():
-        if "_seed" not in sid:
-            continue
-        core_id = sid.split("_seed")[0]
+def table6_stress_variance(low_stress_runs: dict, hard_stress_runs: dict) -> dict:
+    """
+    REPURPOSED FOR SPLIT DATASET: Measures performance differences and variance 
+    between the 25 Low-Stress scenarios and 10 Hard-Stress scenarios.
+    """
+    low_scores = []
+    hard_scores = []
+
+    for run in low_stress_runs.values():
         li = _last_iter(run)
-        if li:
-            by_core[core_id].append(li["verification_score"])
+        if li and "verification_score" in li:
+            low_scores.append(li["verification_score"])
 
-    if not by_core:
-        return {"applicable": False}
-
-    per_scenario = {}
-    for core_id, scores in sorted(by_core.items()):
-        mean = statistics.fmean(scores)
-        std = statistics.pstdev(scores) if len(scores) > 1 else 0.0
-        per_scenario[core_id] = {"mean": round(mean, 4), "std": round(std, 4), "n": len(scores)}
-
-    all_means = [v["mean"] for v in per_scenario.values()]
-    overall_mean = statistics.fmean(all_means)
-    overall_std = statistics.pstdev(all_means) if len(all_means) > 1 else 0.0
-    n = len(all_means)
-    margin = 1.96 * (overall_std / math.sqrt(n)) if n > 1 else 0.0
+    for run in hard_stress_runs.values():
+        li = _last_iter(run)
+        if li and "verification_score" in li:
+            hard_scores.append(li["verification_score"])
 
     return {
         "applicable": True,
-        "per_scenario": per_scenario,
-        "overall_mean": round(overall_mean, 4),
-        "overall_std":  round(overall_std, 4),
-        "ci95": [round(overall_mean - margin, 4), round(overall_mean + margin, 4)],
-        "n_core_scenarios": n,
+        "low_stress_scenarios": {
+            "n": len(low_scores),
+            "mean": round(statistics.fmean(low_scores), 4) if low_scores else 0.0,
+            "std": round(statistics.pstdev(low_scores), 4) if len(low_scores) > 1 else 0.0
+        },
+        "hard_stress_scenarios": {
+            "n": len(hard_scores),
+            "mean": round(statistics.fmean(hard_scores), 4) if hard_scores else 0.0,
+            "std": round(statistics.pstdev(hard_scores), 4) if len(hard_scores) > 1 else 0.0
+        },
+        "performance_gap_mean": round(statistics.fmean(low_scores) - statistics.fmean(hard_scores), 4) if low_scores and hard_scores else 0.0
     }
 
 
-# -----------------------------------------------------------------------
-# Figures
-# -----------------------------------------------------------------------
+def table7_latency_breakdown(runs: dict) -> dict:
+    if not runs:
+        return {"n_scenarios": 0, "avg_generator_s": 0.0, "avg_engine_s": 0.0, "avg_verifier_s": 0.0, "avg_reflector_s": 0.0, "avg_wall_time_s": 0.0}
+        
+    gens, engs, vers, refs, walls = [], [], [], [], []
+    for run in runs.values():
+        gens.append(run.get("total_generator_s", 0.0))
+        engs.append(run.get("total_engine_s", 0.0))
+        vers.append(run.get("total_verifier_s", 0.0))
+        refs.append(run.get("total_reflector_s", 0.0))
+        walls.append(run.get("total_wall_time_s", 0.0))
+        
+    return {
+        "n_scenarios":      len(runs),
+        "avg_generator_s":  round(statistics.fmean(gens), 2),
+        "avg_engine_s":     round(statistics.fmean(engs), 2),
+        "avg_verifier_s":   round(statistics.fmean(vers), 2),
+        "avg_reflector_s":  round(statistics.fmean(refs), 2),
+        "avg_wall_time_s":  round(statistics.fmean(walls), 2),
+    }
+
+
+def table8_stress_analysis(stress_baseline: dict, stress_gen_only: dict, stress_full: dict, stress_dataset: dict) -> list[list]:
+    by_id = {s["id"]: s for s in stress_dataset["scenarios"]}
+    
+    def compute_slice(runs: dict) -> dict[str, list[float]]:
+        scores = defaultdict(list)
+        for sid, run in runs.items():
+            meta = by_id.get(sid, {})
+            cat = meta.get("stress_category", "unknown")
+            li = _last_iter(run) if "iterations" in run else run
+            
+            val = li.get("verification_score") if isinstance(li, dict) else None
+            if val is not None:
+                scores[cat].append(val)
+        return {k: round(statistics.fmean(v), 3) for k, v in scores.items() if v}
+
+    b_scores = compute_slice(stress_baseline)
+    go_scores = compute_slice(stress_gen_only)
+    f_scores = compute_slice(stress_full)
+    
+    all_cats = sorted(list(set(list(b_scores.keys()) + list(go_scores.keys()) + list(f_scores.keys()))))
+    
+    rows = [["stress_category", "baseline_score", "generator_only_score", "full_closed_loop_score"]]
+    for c in all_cats:
+        rows.append([
+            c, 
+            b_scores.get(c, float("nan")), 
+            go_scores.get(c, float("nan")), 
+            f_scores.get(c, float("nan"))
+        ])
+    return rows
+
+
+# ---- Visualizations ----
 def figure1_reflection_convergence(full: dict, out_path: Path) -> None:
-    """Agreement vs. iteration for scenarios that failed on the first pass."""
     fig, ax = plt.subplots(figsize=(8, 5))
     plotted = 0
     for sid, run in sorted(full.items()):
         iters = run.get("iterations", [])
-        if not iters or iters[0].get("verification_passed"):
+        if not iters or iters[0].get("verification_passed", False):
             continue
-        scores = [it["verification_score"] for it in iters]
-        x = list(range(len(scores)))
-        ax.plot(x, scores, marker="o", label=sid)
-        plotted += 1
+        scores = [it["verification_score"] for it in iters if "verification_score" in it]
+        if scores:
+            ax.plot(list(range(len(scores))), scores, marker="o", linewidth=1.5, markersize=4, label=sid)
+            plotted += 1
         if plotted >= 8:
             break
-
-    ax.axhline(0.72, color="red", linestyle="--", linewidth=1.2, label="pass threshold (0.72)")
-    ax.set_xlabel("Reflection Iteration")
-    ax.set_ylabel("Predicate Agreement Score")
-    ax.set_title("Figure 1: Reflection Convergence\n(scenarios that failed iteration 0)")
-    ax.set_ylim(0, 1.05)
-    ax.set_xticks([0, 1, 2])
-    ax.legend(fontsize=8, loc="lower right")
+    ax.set_xlabel("Reflection Iteration", fontsize=10)
+    ax.set_ylabel("Predicate Agreement Score", fontsize=10)
+    ax.set_title("Figure 1: Reflection Convergence Loop Trends", fontsize=12, fontweight="bold")
+    ax.set_ylim(-0.05, 1.05)
+    ax.grid(True, linestyle="--", alpha=0.6)
+    if plotted > 0:
+        ax.legend(fontsize=8, loc="lower right")
     fig.tight_layout()
     fig.savefig(out_path, dpi=300)
     plt.close(fig)
-    logger.info("Saved %s (%d scenarios plotted)", out_path, plotted)
 
 
 def figure2_failure_distribution(taxonomy: dict, out_path: Path) -> None:
-    """Bar chart of failure category distribution (first-pass failures)."""
     cats = ALL_CATEGORIES
     counts = [taxonomy.get(c, {}).get("first_pass_count", 0) for c in cats]
     pcts = [taxonomy.get(c, {}).get("first_pass_pct", 0) for c in cats]
-
-    colors = ["#4C72B0", "#DD8452", "#55A868", "#C44E52"]
+    
     fig, ax = plt.subplots(figsize=(7, 4.5))
-    bars = ax.bar(cats, counts, color=colors, edgecolor="white", linewidth=0.8)
+    bars = ax.bar(cats, counts, color=["#4C72B0", "#DD8452", "#55A868", "#C44E52"], edgecolor="black", alpha=0.85)
+    
     for bar, pct in zip(bars, pcts):
-        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.3,
-                f"{pct:.1f}%", ha="center", va="bottom", fontsize=10, fontweight="bold")
-    ax.set_ylabel("Failure Count (first-pass)")
-    ax.set_title("Figure 2: Failure Distribution by Category\n(pre-reflection, all scenarios)")
-    ax.set_ylim(0, max(counts) * 1.25 if counts else 10)
+        height = bar.get_height()
+        ax.text(bar.get_x() + bar.get_width()/2.0, height + 0.1, f"{pct:.1f}%", ha="center", va="bottom", fontweight="bold", fontsize=9)
+        
+    ax.set_ylabel("Failure Frequency Count", fontsize=10)
+    ax.set_title("Figure 2: Initial Phase Failure Distribution", fontsize=12, fontweight="bold")
+    ax.grid(axis="y", linestyle="--", alpha=0.5)
     fig.tight_layout()
     fig.savefig(out_path, dpi=300)
     plt.close(fig)
-    logger.info("Saved %s", out_path)
 
 
 def figure3_recovery_by_failure_type(recovery: dict, out_path: Path) -> None:
-    """Bar chart: reflection recovery rate per failure category."""
     cats = ALL_CATEGORIES
-    rates = [recovery.get(c, {}).get("recovery_rate", 0) for c in cats]
-    counts = [recovery.get(c, {}).get("first_pass_failures", 0) for c in cats]
-
-    colors = ["#4C72B0", "#DD8452", "#55A868", "#C44E52"]
+    rates = [recovery.get(c, {}).get("recovery_rate", 0.0) for c in cats]
+    clean_rates = [0.0 if math.isnan(r) else r for r in rates]
+    
     fig, ax = plt.subplots(figsize=(7, 4.5))
-    bars = ax.bar(cats, [r if not isinstance(r, float) or not math.isnan(r) else 0 for r in rates],
-                  color=colors, edgecolor="white", linewidth=0.8)
-    for bar, rate, count in zip(bars, rates, counts):
-        label = f"{rate:.0%}" if not (isinstance(rate, float) and math.isnan(rate)) else "N/A"
-        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.02,
-                f"{label}\n(n={count})", ha="center", va="bottom", fontsize=9)
-    ax.set_ylabel("Recovery Rate")
-    ax.set_title("Figure 3: Reflection Recovery Rate by Failure Category")
-    ax.set_ylim(0, 1.25)
-    ax.axhline(1.0, color="gray", linestyle="--", linewidth=0.8)
+    bars = ax.bar(cats, clean_rates, color=["#4C72B0", "#DD8452", "#55A868", "#C44E52"], edgecolor="black", alpha=0.85)
+    
+    for bar in bars:
+        height = bar.get_height()
+        ax.text(bar.get_x() + bar.get_width()/2.0, height + 0.02, f"{height*100:.1f}%", ha="center", va="bottom", fontweight="bold", fontsize=9)
+        
+    ax.set_ylabel("Closed-Loop Recovery Rate", fontsize=10)
+    ax.set_title("Figure 3: Semantic Recovery Rate by Category", fontsize=12, fontweight="bold")
+    ax.set_ylim(0, 1.15)
+    ax.grid(axis="y", linestyle="--", alpha=0.5)
     fig.tight_layout()
     fig.savefig(out_path, dpi=300)
     plt.close(fig)
-    logger.info("Saved %s", out_path)
 
 
 def figure4_per_predicate_alignment(t5: dict, out_path: Path) -> None:
-    """
-    Per-predicate pass rate for generator_only vs. full.
-    This is the figure that supports the scientific claim:
-    'Behavioral predicates remain the dominant source of semantic errors
-     despite high environmental consistency.'
-    """
-    pred_labels = {
-        "weather_correct":    "Weather\n(correct)",
-        "pedestrian_present": "Actor\n(pedestrian)",
-        "vehicles_present":   "Environment\n(vehicles)",
-        "event_observable":   "Behavior\n(event)",
-    }
     preds = ALL_PREDICATES
-    go_rates = [t5["generator_only"].get(p, {}).get("pass_rate", 0) or 0 for p in preds]
-    full_rates = [t5["full"].get(p, {}).get("pass_rate", 0) or 0 for p in preds]
-    labels = [pred_labels[p] for p in preds]
-
+    
+    label_mappings = {"weather_correct": "Weather", "fog_density_violation": "Fog Stress", "pedestrian_present": "Actor Baseline", "sightline_occlusion_error": "Occlusion Stress", "vehicles_present": "Environment", "event_observable": "Behavior"}
+    display_labels = [label_mappings[p] for p in preds]
+    
+    go_rates = [t5["generator_only"].get(p, {}).get("pass_rate", 0.0) or 0.0 for p in preds]
+    full_rates = [t5["full"].get(p, {}).get("pass_rate", 0.0) or 0.0 for p in preds]
+    
     x = np.arange(len(preds))
     width = 0.35
-    colors_go   = "#AEC6E8"
-    colors_full = "#1F77B4"
-
-    fig, ax = plt.subplots(figsize=(8, 5))
-    ax.bar(x - width / 2, go_rates,   width, label="Generator-only", color=colors_go,   edgecolor="white")
-    ax.bar(x + width / 2, full_rates, width, label="Full (w/ reflection)", color=colors_full, edgecolor="white")
-
-    for xi, (go, fu) in enumerate(zip(go_rates, full_rates)):
-        ax.text(xi - width / 2, go + 0.02, f"{go:.2f}", ha="center", va="bottom", fontsize=9)
-        ax.text(xi + width / 2, fu + 0.02, f"{fu:.2f}", ha="center", va="bottom", fontsize=9)
-
+    
+    fig, ax = plt.subplots(figsize=(9, 5))
+    ax.bar(x - width/2, go_rates, width, label="Generator-only", color="#AEC6E8", edgecolor="black", alpha=0.9)
+    ax.bar(x + width/2, full_rates, width, label="Full (w/ reflection)", color="#1F77B4", edgecolor="black", alpha=0.9)
+    
     ax.set_xticks(x)
-    ax.set_xticklabels(labels, fontsize=10)
-    ax.set_ylabel("Pass Rate (fraction of applicable scenarios)")
-    ax.set_title("Figure 4: Per-Predicate Semantic Alignment\n(Generator-only vs. Full Closed-Loop)")
+    ax.set_xticklabels(display_labels, fontsize=8, rotation=15)
+    ax.set_ylabel("Predicate Alignment Pass Rate", fontsize=10)
+    ax.set_title("Figure 4: Comparative Per-Predicate Alignment Optimization", fontsize=12, fontweight="bold")
     ax.set_ylim(0, 1.15)
-    ax.legend()
+    ax.grid(axis="y", linestyle="--", alpha=0.5)
+    ax.legend(loc="upper left")
     fig.tight_layout()
     fig.savefig(out_path, dpi=300)
     plt.close(fig)
-    logger.info("Saved %s", out_path)
 
 
-# -----------------------------------------------------------------------
-# CSV helpers
-# -----------------------------------------------------------------------
 def _write_csv(path: Path, rows: list[list]) -> None:
-    with open(path, "w") as f:
-        for row in rows:
-            f.write(",".join(str(v) for v in row) + "\n")
+    try:
+        with open(path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerows(rows)
+    except Exception as e:
+        logger.error("Failed to write CSV file %s: %s", path, e)
 
 
-# -----------------------------------------------------------------------
-# Main
-# -----------------------------------------------------------------------
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--baseline",        default="outputs/baseline/baseline_results.json")
     parser.add_argument("--generator-only",  default="outputs/generator_only")
     parser.add_argument("--full",            default="outputs/full")
     parser.add_argument("--dataset",         default="scenarios/dataset.json")
+    parser.add_argument("--stress-baseline", default="outputs/stress_baseline/baseline_results.json")
+    parser.add_argument("--stress-gen-only", default="outputs/stress_generator_only")
+    parser.add_argument("--stress-full",     default="outputs/stress_full")
+    parser.add_argument("--stress-dataset",  default="scenarios/stress_dataset.json")
     parser.add_argument("--out",             default="eval/results")
     args = parser.parse_args()
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    dataset       = json.loads(Path(args.dataset).read_text())
-    baseline      = _load_baseline(args.baseline)
+    dataset = json.loads(Path(args.dataset).read_text())
+    baseline = _load_baseline(args.baseline)
     generator_only = _load_pipeline_runs(args.generator_only)
-    full          = _load_pipeline_runs(args.full)
+    full = _load_pipeline_runs(args.full)
 
-    logger.info("Loaded: baseline=%d, generator_only=%d, full=%d scenarios",
-                len(baseline), len(generator_only), len(full))
+    logger.info("Loaded Main Dataset: baseline=%d, generator_only=%d, full=%d scenarios", len(baseline), len(generator_only), len(full))
 
-    # ---- Table 1 -----------------------------------------------------------
+    # ---- Table 1 Execution Rate ----
     t1 = table1_success_rate(baseline, generator_only, full)
-    _write_csv(out_dir / "table1_success_rate.csv",
-               [["condition", "success_rate"]] +
-               [[k, f"{v:.3f}"] for k, v in t1.items()])
     logger.info("Table 1 (success rate): %s", t1)
+    _write_csv(out_dir / "table1_success_rate.csv", [["condition", "success_rate"]] + [[k, f"{v:.3f}"] for k, v in t1.items()])
 
-    # ---- Table 2 -----------------------------------------------------------
+    # ---- Table 2 Semantic Alignment Mean Scores ----
     t2 = table2_semantic_alignment(generator_only, full, dataset)
-    rows = [["category", "subcategory", "generator_only", "full"],
-            ["overall", "-", t2["overall"]["generator_only"], t2["overall"]["full"]]]
-    for cat in ["by_difficulty", "by_weather", "by_event"]:
-        keys = sorted(set(t2[cat]["generator_only"]) | set(t2[cat]["full"]))
-        for k in keys:
-            rows.append([cat, k,
-                         t2[cat]["generator_only"].get(k, ""),
-                         t2[cat]["full"].get(k, "")])
-    _write_csv(out_dir / "table2_semantic_alignment.csv", rows)
     logger.info("Table 2 overall: %s", t2["overall"])
+    
+    t2_rows = [["dimension", "group", "generator_only", "full"]]
+    t2_rows.append(["overall", "all", t2["overall"]["generator_only"], t2["overall"]["full"]])
+    for slice_name in ["by_difficulty", "by_weather", "by_event"]:
+        for group_k in t2[slice_name]["generator_only"]:
+            go_v = t2[slice_name]["generator_only"][group_k]
+            f_v = t2[slice_name]["full"].get(group_k, float("nan"))
+            t2_rows.append([slice_name, group_k, go_v, f_v])
+    _write_csv(out_dir / "table2_semantic_alignment.csv", t2_rows)
 
-    # ---- Table 3: Failure Taxonomy -----------------------------------------
-    t3 = table3_failure_taxonomy(full)
-    rows = [["failure_category", "first_pass_count", "first_pass_pct",
-             "final_count", "final_pct"]]
+    # ---- Table 3 & 4 Failure Recovery Logic ----
+    t3, t4 = compute_true_failure_and_recovery(full)
+    logger.info("Table 3 (failure taxonomy): %s", {c: t3[c] for c in ALL_CATEGORIES if c in t3})
+    logger.info("Table 4 (recovery by category): %s", {c: t4[c] for c in ALL_CATEGORIES if c in t4})
+
+    t3_rows = [["failure_category", "first_pass_count", "first_pass_pct", "final_count", "final_pct"]]
     for cat in ALL_CATEGORIES:
-        d = t3.get(cat, {})
-        rows.append([cat, d.get("first_pass_count", 0), d.get("first_pass_pct", 0),
-                     d.get("final_count", 0), d.get("final_pct", 0)])
-    _write_csv(out_dir / "table3_failure_taxonomy.csv", rows)
-    logger.info("Table 3 (failure taxonomy): %s",
-                {c: t3[c] for c in ALL_CATEGORIES if c in t3})
+        t3_rows.append([cat, t3[cat]["first_pass_count"], t3[cat]["first_pass_pct"], t3[cat]["final_count"], t3[cat]["final_pct"]])
+    _write_csv(out_dir / "table3_failure_taxonomy.csv", t3_rows)
 
-    # ---- Table 4: Recovery by Category -------------------------------------
-    t4 = table4_reflection_recovery_by_category(full)
-    rows = [["failure_category", "first_pass_failures", "recovered", "recovery_rate"]]
+    t4_rows = [["failure_category", "first_pass_failures", "recovered", "recovery_rate"]]
     for cat in ALL_CATEGORIES:
-        d = t4.get(cat, {})
-        rows.append([cat, d.get("first_pass_failures", 0),
-                     d.get("recovered", 0), d.get("recovery_rate", "nan")])
-    rows.append(["OVERALL",
-                 t4["_overall"]["n_scenarios"],
-                 "-",
-                 t4["_overall"]["overall_recovery_rate"]])
-    _write_csv(out_dir / "table4_reflection_recovery_by_category.csv", rows)
-    logger.info("Table 4 (recovery by category): %s",
-                {c: t4[c] for c in ALL_CATEGORIES if c in t4})
-    logger.info("Table 4 overall: %s", t4["_overall"])
+        t4_rows.append([cat, t4[cat]["first_pass_failures"], t4[cat]["recovered"], t4[cat]["recovery_rate"]])
+    _write_csv(out_dir / "table4_reflection_recovery_by_category.csv", t4_rows)
 
-    # ---- Table 5: Per-predicate alignment ----------------------------------
-    t5 = table5_per_predicate_alignment(full, generator_only)
-    rows = [["predicate", "category", "generator_only_pass_rate", "full_pass_rate",
-             "n_applicable_go", "n_applicable_full"]]
-    for pred in ALL_PREDICATES:
-        go = t5["generator_only"].get(pred, {})
-        fu = t5["full"].get(pred, {})
-        rows.append([pred, PREDICATE_TO_CATEGORY[pred],
-                     go.get("pass_rate", "nan"), fu.get("pass_rate", "nan"),
-                     go.get("n_applicable", 0), fu.get("n_applicable", 0)])
-    _write_csv(out_dir / "table5_per_predicate_alignment.csv", rows)
-    logger.info("Table 5 (per-predicate): generator_only=%s  full=%s",
-                {p: t5["generator_only"].get(p, {}).get("pass_rate") for p in ALL_PREDICATES},
-                {p: t5["full"].get(p, {}).get("pass_rate") for p in ALL_PREDICATES})
+    # ---- Table 5 Per-Predicate Denominator Guard ----
+    t5 = table5_per_predicate_alignment(generator_only, full, dataset)
 
-    # ---- Table 6: Seed variance (optional) ---------------------------------
-    t6 = table6_seed_variance(full)
-    if t6["applicable"]:
-        rows = [["core_scenario_id", "mean", "std", "n_seeds"]]
-        for cid, v in t6["per_scenario"].items():
-            rows.append([cid, v["mean"], v["std"], v["n"]])
-        rows.append(["OVERALL", t6["overall_mean"], t6["overall_std"], t6["n_core_scenarios"]])
-        rows.append([f"95%CI", t6["ci95"][0], "to", t6["ci95"][1]])
-        _write_csv(out_dir / "table6_seed_variance.csv", rows)
-        logger.info("Table 6: overall=%.3f 95%%CI=%s", t6["overall_mean"], t6["ci95"])
-    else:
-        logger.info("Table 6 skipped (no seeded runs found; run expand_dataset.py first)")
+    # ---- New Table 8 Evaluation Path (Stress Test Cross Breakdown) ----
+    stress_dataset_path = Path(args.stress_dataset)
+    stress_full = {}
+    if stress_dataset_path.exists():
+        stress_dataset = json.loads(stress_dataset_path.read_text())
+        s_baseline = _load_baseline(args.stress_baseline)
+        s_gen_only = _load_pipeline_runs(args.stress_gen_only)
+        stress_full = _load_pipeline_runs(args.stress_full)
+        
+        logger.info("Processing Grounded Stress Dataset Slices...")
+        t8_rows = table8_stress_analysis(s_baseline, s_gen_only, stress_full, stress_dataset)
+        _write_csv(out_dir / "table8_stress_category_breakdown.csv", t8_rows)
 
-    # ---- Figures -----------------------------------------------------------
+    # ---- Table 6 Stress Split Variance Check ----
+    # Compares the 25 standard scenarios (full) vs the 10 hard stress scenarios (stress_full)
+    t6 = table6_stress_variance(full, stress_full)
+    
+    t6_rows = [
+        ["dataset_split", "n_scenarios", "mean_score", "std_dev"],
+        ["low_stress_scenarios", t6["low_stress_scenarios"]["n"], t6["low_stress_scenarios"]["mean"], t6["low_stress_scenarios"]["std"]],
+        ["hard_stress_scenarios", t6["hard_stress_scenarios"]["n"], t6["hard_stress_scenarios"]["mean"], t6["hard_stress_scenarios"]["std"]],
+        ["performance_gap_mean", "-", t6["performance_gap_mean"], "-"]
+    ]
+    _write_csv(out_dir / "table6_stress_split_variance.csv", t6_rows)
+
+    # ---- Table 7 Latency Breakdown Metrics ----
+    t7 = table7_latency_breakdown(full)
+    t7_rows = [
+        ["metric", "seconds"],
+        ["avg_generator_s", t7["avg_generator_s"]],
+        ["avg_engine_s", t7["avg_engine_s"]],
+        ["avg_verifier_s", t7["avg_verifier_s"]],
+        ["avg_reflector_s", t7["avg_reflector_s"]],
+        ["avg_wall_time_s", t7["avg_wall_time_s"]],
+    ]
+    _write_csv(out_dir / "table7_system_latency.csv", t7_rows)
+
+    # ---- Figures Sequence ----
     if full:
         figure1_reflection_convergence(full, out_dir / "figure1_reflection_convergence.pdf")
         figure2_failure_distribution(t3, out_dir / "figure2_failure_distribution.pdf")
         figure3_recovery_by_failure_type(t4, out_dir / "figure3_recovery_by_failure_type.pdf")
         figure4_per_predicate_alignment(t5, out_dir / "figure4_per_predicate_alignment.pdf")
-    else:
-        logger.warning("No full-condition runs found. Run eval/run_full_evaluation.py --mode full first.")
 
-    # ---- Summary JSON ------------------------------------------------------
+    # ---- Summary JSON Sync ----
     summary = {
         "table1_success_rate":               t1,
         "table2_semantic_alignment":          t2,
@@ -658,10 +563,11 @@ def main():
                 "full": t5["full"].get(p, {}).get("pass_rate")}
             for p in ALL_PREDICATES
         },
-        "table6_seed_variance":               t6,
+        "table6_stress_split_variance":       t6,
+        "table7_system_latency":              t7
     }
-    (out_dir / "summary.json").write_text(json.dumps(summary, indent=2))
-    logger.info("All metrics written to %s/", out_dir)
+    (out_dir / "summary_metrics.json").write_text(json.dumps(summary, indent=2))
+    logger.info("All metrics successfully synchronized to %s/", out_dir)
 
 
 if __name__ == "__main__":

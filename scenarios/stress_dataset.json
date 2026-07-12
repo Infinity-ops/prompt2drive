@@ -1,0 +1,154 @@
+{
+  "scenarios": [
+    {
+      "id": "stress_01_occluded_crossing",
+      "prompt": "Nighttime with heavy rain reducing visibility to near zero. A large delivery truck is parked on the right shoulder, completely blocking sightline to a crosswalk where a pedestrian is crossing illegally against the signal.",
+      "difficulty": "hard",
+      "expected_weather": "rain",
+      "expected_event": "crossing",
+      "expected_actors": ["pedestrian", "truck"],
+      "ground_truth_predicates": {
+        "weather_correct": true,
+        "pedestrian_present": true,
+        "vehicles_present": true,
+        "event_observable": false
+      },
+      "stress_category": "occlusion"
+    },
+    {
+      "id": "stress_02_school_zone_density",
+      "prompt": "Midday, clear skies, dense school zone. A transit bus is stopped in the right lane, a cyclist rides ahead in the same lane, and two pedestrians walk toward a crosswalk as an ambulance approaches rapidly from behind with lights active.",
+      "difficulty": "hard",
+      "expected_weather": "clear",
+      "expected_event": "crossing",
+      "expected_actors": ["pedestrian", "cyclist", "bus", "ambulance"],
+      "ground_truth_predicates": {
+        "weather_correct": true,
+        "pedestrian_present": true,
+        "vehicles_present": true,
+        "event_observable": true
+      },
+      "stress_category": "dense_multi_actor"
+    },
+    {
+      "id": "stress_03_dense_fog_construction",
+      "prompt": "Dawn with extremely dense fog limiting visibility to roughly fifteen meters. Active roadworks block the left lane with traffic cones and barriers, and a police vehicle idles nearby with emergency lights flashing.",
+      "difficulty": "hard",
+      "expected_weather": "fog",
+      "expected_event": "obstruction",
+      "expected_actors": ["police_vehicle"],
+      "ground_truth_predicates": {
+        "weather_correct": true,
+        "pedestrian_present": false,
+        "vehicles_present": true,
+        "event_observable": false
+      },
+      "stress_category": "low_visibility"
+    },
+    {
+      "id": "stress_04_blinding_sun_cutin",
+      "prompt": "Sunset with severe, near-blinding low sun angle directly ahead. A cyclist abruptly changes lanes into the ego vehicle's path while an oncoming truck passes on wet asphalt in the opposite lane.",
+      "difficulty": "hard",
+      "expected_weather": "clear",
+      "expected_event": "lane_change",
+      "expected_actors": ["cyclist", "truck"],
+      "ground_truth_predicates": {
+        "weather_correct": true,
+        "pedestrian_present": false,
+        "vehicles_present": true,
+        "event_observable": false
+      },
+      "stress_category": "sensor_glare"
+    },
+    {
+      "id": "stress_05_distant_emergency_yield",
+      "prompt": "Clear day on a long straight highway. An emergency vehicle approaches rapidly from far behind, only partially visible through overhead highway signage and guardrails, requiring the ego vehicle to yield.",
+      "difficulty": "hard",
+      "expected_weather": "clear",
+      "expected_event": "lane_change",
+      "expected_actors": ["emergency_vehicle"],
+      "ground_truth_predicates": {
+        "weather_correct": true,
+        "pedestrian_present": false,
+        "vehicles_present": true,
+        "event_observable": false
+      },
+      "stress_category": "long_range_small_object"
+    },
+    {
+      "id": "stress_06_night_fog_redlight",
+      "prompt": "Late night with patchy ground fog drifting across an unlit intersection. A vehicle runs the red light at high speed just as the ego vehicle enters the junction, with a stalled car partially blocking the far lane.",
+      "difficulty": "hard",
+      "expected_weather": "night",
+      "expected_event": "red_light_violation",
+      "expected_actors": ["vehicle"],
+      "ground_truth_predicates": {
+        "weather_correct": true,
+        "pedestrian_present": false,
+        "vehicles_present": true,
+        "event_observable": true
+      },
+      "stress_category": "low_light_low_reaction_time"
+    },
+    {
+      "id": "stress_07_overtaking_convoy",
+      "prompt": "Overcast afternoon on a narrow two-lane road. A slow-moving farm tractor blocks the lane ahead while a tightly packed convoy of five vehicles attempts to overtake it one after another around a blind curve.",
+      "difficulty": "hard",
+      "expected_weather": "cloudy",
+      "expected_event": "overtaking",
+      "expected_actors": ["tractor", "vehicle"],
+      "ground_truth_predicates": {
+        "weather_correct": true,
+        "pedestrian_present": false,
+        "vehicles_present": true,
+        "event_observable": true
+      },
+      "stress_category": "dense_multi_actor"
+    },
+    {
+      "id": "stress_08_sudden_brake_rain_glare",
+      "prompt": "Heavy rain at dusk with streetlights reflecting sharply off the wet road surface. The vehicle directly ahead brakes suddenly to avoid debris, forcing an emergency stop while a cyclist rides close along the shoulder.",
+      "difficulty": "hard",
+      "expected_weather": "rain",
+      "expected_event": "emergency_brake",
+      "expected_actors": ["vehicle", "cyclist"],
+      "ground_truth_predicates": {
+        "weather_correct": true,
+        "pedestrian_present": false,
+        "vehicles_present": true,
+        "event_observable": false
+      },
+      "stress_category": "sensor_glare"
+    },
+    {
+      "id": "stress_09_construction_night_pedestrian",
+      "prompt": "Night, unlit construction zone with debris and a fallen barrier partially obstructing the lane. A construction worker briefly steps into the road to redirect traffic before stepping back behind a parked excavator.",
+      "difficulty": "hard",
+      "expected_weather": "night",
+      "expected_event": "obstruction",
+      "expected_actors": ["pedestrian", "excavator"],
+      "ground_truth_predicates": {
+        "weather_correct": true,
+        "pedestrian_present": true,
+        "vehicles_present": true,
+        "event_observable": false
+      },
+      "stress_category": "occlusion"
+    },
+    {
+      "id": "stress_10_fog_multi_pedestrian_crossing",
+      "prompt": "Early morning with moderate fog near a busy market street. Three pedestrians cross at different points outside the marked crosswalk while a delivery van double-parks, forcing the ego vehicle to navigate around it.",
+      "difficulty": "hard",
+      "expected_weather": "fog",
+      "expected_event": "crossing",
+      "expected_actors": ["pedestrian", "van"],
+      "ground_truth_predicates": {
+        "weather_correct": true,
+        "pedestrian_present": true,
+        "vehicles_present": true,
+        "event_observable": true
+      },
+      "stress_category": "dense_multi_actor"
+    }
+  ]
+}

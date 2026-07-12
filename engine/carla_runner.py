@@ -19,21 +19,14 @@ from engine.hardware_profiles import HardwareProfile, get_profile
 
 logger = logging.getLogger("prompt_to_drive.engine")
 
-# Port for CARLA's Traffic Manager RPC server.
-# Must NOT be 8000 when vLLM is running (vLLM default is 8000).
 TM_PORT = 8100
 
 WEATHER_PRESETS = {
-    "clear":  dict(cloudiness=10,  precipitation=0,  precipitation_deposits=0,
-                   fog_density=0,  sun_altitude_angle=70),
-    "rain":   dict(cloudiness=80,  precipitation=80, precipitation_deposits=50,
-                   fog_density=0,  sun_altitude_angle=40),
-    "fog":    dict(cloudiness=60,  precipitation=0,  precipitation_deposits=0,
-                   fog_density=60, fog_distance=15,  sun_altitude_angle=50),
-    "night":  dict(cloudiness=20,  precipitation=0,  precipitation_deposits=0,
-                   fog_density=0,  sun_altitude_angle=-30),
-    "cloudy": dict(cloudiness=70,  precipitation=0,  precipitation_deposits=0,
-                   fog_density=0,  sun_altitude_angle=55),
+    "clear":  dict(cloudiness=10,  precipitation=0,  precipitation_deposits=0, fog_density=0,  sun_altitude_angle=70),
+    "rain":   dict(cloudiness=80,  precipitation=80, precipitation_deposits=50, fog_density=0,  sun_altitude_angle=40),
+    "fog":    dict(cloudiness=60,  precipitation=0,  precipitation_deposits=0, fog_density=60, fog_distance=15,  sun_altitude_angle=50),
+    "night":  dict(cloudiness=20,  precipitation=0,  precipitation_deposits=0, fog_density=0,  sun_altitude_angle=-30),
+    "cloudy": dict(cloudiness=70,  precipitation=0,  precipitation_deposits=0, fog_density=0,  sun_altitude_angle=55),
 }
 
 FALLBACK_SPAWN_INDICES = [0, 3, 5, 8, 12, 20, 35]
@@ -60,9 +53,6 @@ class CarlaRunner:
         self._world = None
         self._tm = None 
 
-    # ------------------------------------------------------------------ #
-    # Connection
-    # ------------------------------------------------------------------ #
     def connect(self):
         import carla
         self._client = carla.Client(self.host, self.port)
@@ -74,7 +64,6 @@ class CarlaRunner:
         settings.fixed_delta_seconds = self.profile.fixed_delta_seconds
         self._world.apply_settings(settings)
 
-        # Initialize/Reset the Traffic Manager instance
         self._tm = self._client.get_trafficmanager(TM_PORT)
         self._tm.set_synchronous_mode(True)
 
@@ -108,9 +97,6 @@ class CarlaRunner:
         except Exception:
             pass
 
-    # ------------------------------------------------------------------ #
-    # Main entry point
-    # ------------------------------------------------------------------ #
     def run(self, spec: ScenarioSpec, scenario_id: str, output_dir: str,
             live_frame_callback: Optional[callable] = None,
             rng_seed: Optional[int] = None) -> ExecutionResult:
@@ -129,7 +115,7 @@ class CarlaRunner:
             "hardware_profile": self.profile.name,
             "weather_api_called": None,
             "pedestrian_spawned": False,
-            "vehicle_count": 0,
+            "vehicle_count": 0, 
             "actors": [],
             "execution_completed": False,
             "errors": [],
@@ -147,69 +133,73 @@ class CarlaRunner:
             if not self._world_alive():
                 self.connect()
 
-            # Always refresh TM reference at the start of a run to prevent thread leakage
             self._tm = self._client.get_trafficmanager(TM_PORT)
             self._tm.set_synchronous_mode(True)
 
-            # ---- Step 1: Map (FORCED RELOAD EVERY ITERATION TO PREVENT COREDUMP) ----
-            logger.info("[%s] Step 1/7: Forcing clean map reload to purge physics state", scenario_id)
+            # ---- Step 1: Map Reload / Clean Slate ----
             try:
                 current_map = self._world.get_map().name.split("/")[-1]
             except RuntimeError:
                 logger.warning("[%s] World handle stale; reconnecting.", scenario_id)
                 self.connect()
+                current_map = self._world.get_map().name.split("/")[-1]
 
-            # Gracefully drop sync mode to clear background queues
-            pre = self._world.get_settings()
-            pre.synchronous_mode = False
-            self._world.apply_settings(pre)
-            
-            logger.info("[%s] Purging old actors and flushing background threads...", scenario_id)
-            for actor in self._world.get_actors().filter('*sensor*'):
-                try:
-                    if actor.is_alive:
-                        actor.stop()
-                        actor.destroy()
-                except Exception:
-                    pass
-            for actor in self._world.get_actors().filter('*vehicle*'):
-                self._safe_destroy(actor)
-            for actor in self._world.get_actors().filter('*walker*'):
-                self._safe_destroy(actor)
-            
-            # Allow streaming thread context loops to exhaust fully
-            time.sleep(2.0)
+            if current_map != spec.town:
+                logger.info("[%s] Map mismatch. Forcing clean map reload.", scenario_id)
+                pre = self._world.get_settings()
+                pre.synchronous_mode = False
+                self._world.apply_settings(pre)
+                
+                for actor in self._world.get_actors().filter('*sensor*'):
+                    try:
+                        if actor.is_alive:
+                            actor.stop()
+                            actor.destroy()
+                    except Exception: pass
+                for actor in self._world.get_actors().filter('*vehicle*'): self._safe_destroy(actor)
+                for actor in self._world.get_actors().filter('*walker*'): self._safe_destroy(actor)
+                
+                time.sleep(2.0)
+                self._client.set_timeout(180.0)
+                self._world = self._client.load_world(spec.town)
+                time.sleep(2.0)
+                self._world = self._client.get_world()
+                self._client.set_timeout(self.timeout)
 
-            logger.info("[%s] Loading map %s (Clean Slate)", scenario_id, spec.town)
-            self._client.set_timeout(180.0)
-            self._world = self._client.load_world(spec.town)
-            time.sleep(2.0)
-            self._world = self._client.get_world()
-            self._client.set_timeout(self.timeout)
+                settings = self._world.get_settings()
+                settings.synchronous_mode = True
+                settings.fixed_delta_seconds = self.profile.fixed_delta_seconds
+                self._world.apply_settings(settings)
+            else:
+                all_actors = self._world.get_actors()
+                for actor in all_actors:
+                    if any(x in actor.type_id for x in ['vehicle.', 'walker.', 'sensor.']):
+                        try:
+                            if 'sensor.' in actor.type_id:
+                                actor.stop()
+                            actor.destroy()
+                        except Exception: pass
+                self._world.tick()
+                time.sleep(0.5)
 
-            settings = self._world.get_settings()
-            settings.synchronous_mode = True
-            settings.fixed_delta_seconds = self.profile.fixed_delta_seconds
-            self._world.apply_settings(settings)
-
-            self._tm = self._client.get_trafficmanager(TM_PORT)
-            self._tm.set_synchronous_mode(True)
-
-            logger.info("[%s] Step 1/7: map forced reload complete", scenario_id)
             state_log["map_loaded"] = spec.town
 
-            # ---- Step 2: Weather -------------------------------------------
-            logger.info("[%s] Step 2/7: applying weather '%s'", scenario_id, spec.weather)
-            self._world.set_weather(carla.WeatherParameters(**WEATHER_PRESETS[spec.weather]))
+            # ---- Step 2: Weather Overrides ----
+            weather_params = WEATHER_PRESETS[spec.weather].copy()
+            if hasattr(spec, 'fog_density') and spec.fog_density is not None:
+                weather_params['fog_density'] = spec.fog_density
+            if hasattr(spec, 'fog_distance') and spec.fog_distance is not None:
+                weather_params['fog_distance'] = spec.fog_distance
+
+            logger.info("[%s] Applying weather '%s' with adjustments: %s", scenario_id, spec.weather, weather_params)
+            self._world.set_weather(carla.WeatherParameters(**weather_params))
             state_log["weather_api_called"] = spec.weather
 
-            # ---- Step 3: Blueprint library & spawn points ------------------
-            logger.info("[%s] Step 3/7: fetching blueprint library and spawn points", scenario_id)
+            # ---- Step 3: Blueprint Library ----
             blueprint_library = self._world.get_blueprint_library()
             spawn_points = self._world.get_map().get_spawn_points()
 
-            # ---- Step 4: Ego vehicle ---------------------------------------
-            logger.info("[%s] Step 4/7: spawning ego vehicle", scenario_id)
+            # ---- Step 4: Ego Vehicle ----
             ego_bp = blueprint_library.filter("vehicle.tesla.model3")[0]
             ego_spawn = self._safe_spawn_point(spawn_points, spec.spawn_point_index)
             ego_vehicle = self._world.try_spawn_actor(ego_bp, ego_spawn)
@@ -217,77 +207,103 @@ class CarlaRunner:
                 raise RuntimeError(f"Failed to spawn ego vehicle at index {spec.spawn_point_index}")
             
             state_log["actors"].append({"type": "ego_vehicle", "id": ego_vehicle.id})
-
-            # Tick before registering with TM
             self._world.tick()
             ego_vehicle.set_autopilot(True, TM_PORT)
+            
+            # SAFEGUARD: Ensure Traffic Manager drives at standard operational speed limits
+            self._tm.set_desired_speed(ego_vehicle, 30.0) 
 
-            # ---- Step 5: Camera --------------------------------------------
-            logger.info("[%s] Step 5/7: spawning camera (%dx%d)", scenario_id,
-                        self.profile.camera_width, self.profile.camera_height)
+            # ---- Step 5: Camera Setup ----
             camera_bp = blueprint_library.find("sensor.camera.rgb")
             camera_bp.set_attribute("image_size_x", str(self.profile.camera_width))
             camera_bp.set_attribute("image_size_y", str(self.profile.camera_height))
-            camera_transform = carla.Transform(
-                carla.Location(x=-5.5, z=2.8), carla.Rotation(pitch=-15)
-            )
+            camera_transform = carla.Transform(carla.Location(x=-5.5, z=2.8), carla.Rotation(pitch=-15))
             camera = self._world.spawn_actor(camera_bp, camera_transform, attach_to=ego_vehicle)
 
             captured_frames: dict[int, carla.Image] = {}
-
             def _on_image(image):
-                if not callback_active:
-                    return
+                if not callback_active: return
                 try:
                     captured_frames[image.frame] = image
                     if len(captured_frames) > 20:
                         del captured_frames[min(captured_frames.keys())]
-                except Exception:
-                    pass
-
+                except Exception: pass
             camera.listen(_on_image)
 
-            # ---- Step 6: NPC vehicles & Pedestrian Bypass ------------------
-            if spec.pedestrian:
-                logger.info("[%s] Step 6/7: spawning pedestrian (No-Nav Velocity Mode)", scenario_id)
-                self._world.tick()
+            # ---- Step 6: Spawn Background NPC Vehicles ----
+            logger.info("[%s] Spawning %d baseline NPC vehicles...", scenario_id, spec.num_vehicles)
+            vehicle_bps = blueprint_library.filter("vehicle.*")
+            available_spawns = [sp for i, sp in enumerate(spawn_points) if i != spec.spawn_point_index]
+            random.shuffle(available_spawns)
+
+            spawned_count = 0
+            for sp in available_spawns:
+                if spawned_count >= spec.num_vehicles:
+                    break
+                bp = random.choice(vehicle_bps)
+                if bp.has_attribute('color'):
+                    color = random.choice(bp.get_attribute('color').recommend_values)
+                    bp.set_attribute('color', color)
                 
+                npc_v = self._world.try_spawn_actor(bp, sp)
+                if npc_v is not None:
+                    npc_v.set_autopilot(True, TM_PORT)
+                    npc_list.append(npc_v)
+                    state_log["actors"].append({"type": "npc_vehicle", "id": npc_v.id})
+                    spawned_count += 1
+
+            # ---- Step 6b: Handle Stress Blocking Actor Occlusion ----
+            if hasattr(spec, 'blocking_actor') and spec.blocking_actor:
+                occlusion_dist = getattr(spec, 'occlusion_distance', 8.0)
+                logger.info("[%s] Spawning stress blocking actor (occlusion distance: %sm)", scenario_id, occlusion_dist)
+                
+                ego_t = ego_vehicle.get_transform()
+                fwd = ego_t.get_forward_vector()
+                blocker_bp = blueprint_library.filter("vehicle.carlamotors.carlacola")[0]
+                blocker_loc = carla.Location(
+                    x=ego_t.location.x + fwd.x * occlusion_dist,
+                    y=ego_t.location.y + fwd.y * occlusion_dist,
+                    z=ego_t.location.z + 0.5
+                )
+                blocker_v = self._world.try_spawn_actor(blocker_bp, carla.Transform(blocker_loc, ego_t.rotation))
+                if blocker_v is not None:
+                    blocker_v.set_simulate_physics(True)
+                    npc_list.append(blocker_v)
+                    state_log["actors"].append({"type": "blocking_truck", "id": blocker_v.id})
+                    
+                    # Prevent Traffic Manager from stopping completely before encountering the visibility occlusion point
+                    self._tm.ignore_vehicles_percentage(ego_vehicle, 100.0)
+
+            state_log["vehicle_count"] = len(npc_list)
+
+            # ---- Step 6c: Pedestrian Logic ----
+            if spec.pedestrian:
+                logger.info("[%s] Spawning pedestrian (No-Nav Velocity Mode)", scenario_id)
+                self._world.tick()
                 try:
                     walker_bp = random.choice(blueprint_library.filter("walker.pedestrian.*"))
                     ego_t = ego_vehicle.get_transform()
                     fwd = ego_t.get_forward_vector()
                     right = ego_t.get_right_vector()
                     
-                    # Spawn slightly elevated off ground to avoid PhysX collision layout crashes
                     spawn_loc = carla.Location(
                         x=ego_t.location.x + fwd.x * 12.0 + right.x * 2.5,
                         y=ego_t.location.y + fwd.y * 12.0 + right.y * 2.5,
                         z=ego_t.location.z + 1.2
                     )
-                    
                     spawn_rot = carla.Rotation(pitch=0.0, yaw=ego_t.rotation.yaw + 180.0, roll=0.0)
                     walker_actor = self._world.try_spawn_actor(walker_bp, carla.Transform(spawn_loc, spawn_rot))
 
                     if walker_actor is not None:
                         state_log["pedestrian_spawned"] = True
                         self._world.tick()
-                        
-                        # Apply clear linear vector trajectories to bypass buggy navigation meshes entirely
-                        cross_velocity = carla.Vector3D(
-                            x=-fwd.x * 1.5 - right.x * 2.0,
-                            y=-fwd.y * 1.5 - right.y * 2.0,
-                            z=0.0
-                        )
+                        cross_velocity = carla.Vector3D(x=-fwd.x * 1.5 - right.x * 2.0, y=-fwd.y * 1.5 - right.y * 2.0, z=0.0)
                         walker_actor.set_target_velocity(cross_velocity)
-                        logger.info("[%s] Pedestrian physics velocity applied successfully.", scenario_id)
-                    else:
-                        logger.warning("[%s] Pedestrian mesh conflict prevented spawn.", scenario_id)
-                        
                 except Exception as e:
-                    logger.error("[%s] Catching unexpected crash during pedestrian sequence: %s", scenario_id, e)
+                    logger.error("[%s] Unexpected exception during pedestrian sequence: %s", scenario_id, e)
 
-            # ---- Step 7: Tick loop -----------------------------------------
-            logger.info("[%s] Step 7/7: starting tick loop", scenario_id)
+            # ---- Step 7: Simulation Tick Loop ----
+            logger.info("[%s] Starting tick loop execution", scenario_id)
             ticks = int(spec.duration_s / self.profile.fixed_delta_seconds)
             capture_every = max(1, int(self.profile.capture_every_s / self.profile.fixed_delta_seconds))
             saved_frames = []
@@ -306,8 +322,7 @@ class CarlaRunner:
                 if t % capture_every == 0:
                     frame_id = self._world.get_snapshot().frame
                     for _ in range(30):
-                        if frame_id in captured_frames:
-                            break
+                        if frame_id in captured_frames: break
                         time.sleep(0.02)
 
                     if frame_id in captured_frames:
@@ -316,13 +331,10 @@ class CarlaRunner:
                         try:
                             img.save_to_disk(str(fp))
                             saved_frames.append(str(fp))
-                        except RuntimeError:
-                            pass
+                        except RuntimeError: pass
                         if live_frame_callback is not None:
-                            try:
-                                live_frame_callback(img)
-                            except Exception:
-                                pass
+                            try: live_frame_callback(img)
+                            except Exception: pass
 
             state_log["execution_completed"] = not execution_failed
             log_path = out / "state_log.json"
@@ -348,36 +360,23 @@ class CarlaRunner:
             )
 
         finally:
-            # 1. Stop frame streams
             callback_active = False
             if camera is not None:
-                try:
-                    camera.stop()
-                except Exception:
-                    pass
+                try: camera.stop()
+                except Exception: pass
             time.sleep(0.15) 
 
-            # 2. Teardown pedestrian controls safely
             if walker_controller is not None:
                 try:
-                    if walker_controller.is_alive:
-                        walker_controller.stop()
-                except Exception:
-                    pass
+                    if walker_controller.is_alive: walker_controller.stop()
+                except Exception: pass
                 self._safe_destroy(walker_controller)
 
             self._safe_destroy(walker_actor)
-
-            # 3. Clean up all vehicles
-            for npc in npc_list:
-                self._safe_destroy(npc)
-
+            for npc in npc_list: self._safe_destroy(npc)
             self._safe_destroy(camera)
             self._safe_destroy(ego_vehicle)
 
-            # 4. Final Tick to commit deletions to the simulation layout context
             if self._world is not None:
-                try:
-                    self._world.tick()
-                except Exception:
-                    pass
+                try: self._world.tick()
+                except Exception: pass

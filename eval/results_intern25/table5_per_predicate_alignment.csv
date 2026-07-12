@@ -1,5 +1,0 @@
-predicate,category,generator_only_pass_rate,full_pass_rate,n_applicable_go,n_applicable_full
-weather_correct,Weather,1.0,0.96,25,25
-pedestrian_present,Actor,1.0,0.0,10,12
-vehicles_present,Environment,1.0,0.6,25,25
-event_observable,Behavior,1.0,0.56,25,25

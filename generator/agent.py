@@ -16,6 +16,7 @@ in the paper; the engine-side half is the deterministic CarlaRunner.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import shelve
 from pathlib import Path
@@ -161,7 +162,12 @@ class Generator:
 
 
 class BaselineCodeSchema(BaseModel):
-    code: str = Field(description="The complete, standalone CARLA Python API script.")
+    # Use validation_alias to accept 'script' cleanly if the underlying model misinterprets the structural parameter key name
+    code: str = Field(
+        default="", 
+        description="The complete, standalone CARLA Python API script.",
+        validation_alias="script"
+    )
 
 
 def generate_baseline_code(
@@ -207,9 +213,22 @@ def generate_baseline_code(
             )
             return parsed_response.code
         except Exception as e:
-            logger.warning("Structured generation wrapper fallback failed: %s. Trying raw text generation.", e)
+            logger.warning("Structured generation wrapper fallback failed: %s. Trying raw text generation fallback matching logic.", e)
             if hasattr(backend, "generate"):
-                return backend.generate(system_prompt=system_content, user_prompt=prompt)
+                raw_text = backend.generate(system_prompt=system_content, user_prompt=prompt)
+                
+                # Attempt to extract fields if raw text fallback returned stringified JSON containing expected schema variants
+                try:
+                    clean_txt = raw_text.replace("```json", "").replace("```", "").strip()
+                    data = json.loads(clean_txt)
+                    if "script" in data:
+                        return str(data["script"])
+                    if "code" in data:
+                        return str(data["code"])
+                except Exception:
+                    pass
+                
+                return raw_text
 
     # Absolute fallback (Only imported and hit if no framework backend container is active)
     from openai import OpenAI
