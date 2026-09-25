@@ -39,6 +39,7 @@ from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from backends.llm_backend import get_backend  # noqa: E402
 from engine.carla_runner import CarlaRunner  # noqa: E402
 from orchestrator.pipeline import PipelineRun, PromptToDrivePipeline  # noqa: E402
 
@@ -127,8 +128,13 @@ class PromptToDriveUI:
         self.send_button = pygame.Rect(30, 510, 120, 36)
 
         runner = CarlaRunner(host=carla_host, port=carla_port, hardware_profile=hardware_profile)
+        backend_instance = get_backend(backend or os.getenv("P2D_TEXT_BACKEND", "openai"))
         self.pipeline = PromptToDrivePipeline(
-            runner=runner, max_iterations=max_iterations, output_root=output_root, backend=backend,
+            runner=runner, max_iterations=max_iterations, output_root=output_root,
+            hardware_profile=hardware_profile,
+            generator_backend=backend_instance,
+            verifier_backend=backend_instance,
+            reflector_backend=backend_instance,
         )
         self.last_run: Optional[PipelineRun] = None
         self.running = True
@@ -375,9 +381,9 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(description="Prompt-to-Drive interactive UI")
-    parser.add_argument("--backend", choices=["openai", "huggingface"], default=None)
+    parser.add_argument("--backend", choices=["openai", "huggingface", "local"], default=None)
     parser.add_argument("--hardware-profile", default=None,
-                         choices=["default", "low_vram_2gb", "headless_ci"])
+                         choices=["low_vram_2gb", "low_vram_2gb_signals"])
     parser.add_argument("--carla-host", default="localhost")
     parser.add_argument("--carla-port", type=int, default=2000)
     parser.add_argument("--max-iterations", type=int, default=3)

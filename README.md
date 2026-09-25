@@ -68,6 +68,8 @@ prompt2drive/
 │   └── pipeline.py         # Closed-loop orchestration (Algorithm 1 in the paper)
 ├── ui/
 │   └── app.py               # Interactive pygame UI: live agent status + semantic score panel
+├── webui/                  # Browser UI (FastAPI + WebSocket): live or replay of recorded runs
+├── demo_runs/              # Recorded runs shipped with the public replay demo
 ├── scenarios/
 │   └── dataset.json        # 20-scenario evaluation set with ground-truth labels
 ├── eval/
@@ -345,6 +347,18 @@ huggingface    84.0        0.781         75.0      2.10
 ---
 
 ## Interactive UI
+
+### Web UI (recommended)
+
+```bash
+pip install -r requirements-ui.txt
+python -m webui.server --mode live --backend local --hardware-profile low_vram_2gb
+# open http://127.0.0.1:8080
+```
+
+Type a scenario, press **Generate**, and watch each agent report in turn: **Agent 1 Generator** shows the `ScenarioSpec` it produced, the **CARLA Engine** streams the frames it captures, **Agent 2 Verifier** shows each predicate, the predicate agreement and the hybrid score against the threshold, and **Agent 3 Reflector** shows the exact correction it sends back for the next iteration. Every live run is saved under `outputs/ui/` and can be replayed without CARLA (`--mode replay`), which is how the public demo works. Full guide: [docs/WEB_UI.md](docs/WEB_UI.md).
+
+### Desktop (pygame) UI
 
 ```bash
 python -m ui.app --backend huggingface --hardware-profile low_vram_2gb

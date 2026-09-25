@@ -17,4 +17,13 @@ huggingface_hub>=0.24
 
 # UI (optional -- only needed if you run ui/app.py)
 pygame>=2.5
+
+
+# Web UI (webui/). Replay mode needs ONLY these -- no CARLA, torch or model SDKs.
+# Live mode additionally needs requirements.txt + the CARLA wheel.
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pillow>=10.0
 numpy>=1.24
+python-dotenv>=1.0
+httpx>=0.27   # only for tests/test_webui.py (fastapi TestClient)

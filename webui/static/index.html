@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Prompt-to-Drive</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🚦</text></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Condensed:wght@500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <h1>Prompt-to-Drive</h1>
+      <p>Describe a driving scenario. Three agents build it in CARLA, check it, and fix it.</p>
+    </div>
+    <div class="status" aria-live="polite">
+      <span id="mode-badge" class="badge">Connecting…</span>
+      <span id="carla-badge" class="badge" hidden></span>
+      <span id="backend-badge" class="badge" hidden></span>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="left">
+      <form id="prompt-form" class="prompt" autocomplete="off">
+        <label for="prompt">Scenario</label>
+        <textarea id="prompt" rows="3" maxlength="500"
+          placeholder="A pedestrian suddenly crosses near a traffic signal in rainy weather."></textarea>
+        <div class="prompt-row">
+          <span id="char-count" class="muted">0 / 500</span>
+          <div class="buttons">
+            <button type="button" id="clear-btn" class="ghost">Clear</button>
+            <button type="submit" id="generate-btn" class="primary">Generate</button>
+          </div>
+        </div>
+        <p class="hint muted">Enter to generate, Shift+Enter for a new line.</p>
+        <div id="examples" class="examples" aria-label="Example prompts"></div>
+      </form>
+
+      <div class="loop-head">
+        <h2>Closed loop</h2>
+        <div id="iter-tabs" class="iter-tabs" role="tablist" aria-label="Iterations"></div>
+      </div>
+
+      <ol id="lane" class="lane">
+        <li class="station" data-stage="generator">
+          <span class="dot" aria-hidden="true"></span>
+          <div class="station-body">
+            <h3>Agent 1 <span>Generator</span></h3>
+            <p class="what">Turns your prompt into a validated scenario spec.</p>
+            <div class="out"></div>
+          </div>
+        </li>
+        <li class="station" data-stage="engine">
+          <span class="dot" aria-hidden="true"></span>
+          <div class="station-body">
+            <h3>Engine <span>CARLA</span></h3>
+            <p class="what">Runs the spec in the simulator and captures frames and a state log.</p>
+            <div class="out"></div>
+          </div>
+        </li>
+        <li class="station" data-stage="verifier">
+          <span class="dot" aria-hidden="true"></span>
+          <div class="station-body">
+            <h3>Agent 2 <span>Verifier</span></h3>
+            <p class="what">Checks the frames and log against your prompt, predicate by predicate.</p>
+            <div class="out"></div>
+          </div>
+        </li>
+        <li class="station" data-stage="reflector">
+          <span class="dot" aria-hidden="true"></span>
+          <div class="station-body">
+            <h3>Agent 3 <span>Reflector</span></h3>
+            <p class="what">If a check fails, writes a targeted correction and sends it back to the Generator.</p>
+            <div class="out"></div>
+          </div>
+        </li>
+      </ol>
+    </section>
+
+    <section class="right">
+      <figure class="camera">
+        <div class="screen">
+          <img id="frame" alt="Camera frame from the CARLA simulation" hidden>
+          <div id="screen-empty" class="screen-empty">
+            <strong>No scene yet</strong>
+            <span>Generate a scenario and the Engine's camera frames appear here.</span>
+          </div>
+          <span id="live-tag" class="live-tag" hidden>Iteration 1</span>
+        </div>
+        <figcaption class="muted">Frames the Engine captured for the Verifier.</figcaption>
+      </figure>
+      <div id="filmstrip" class="filmstrip" aria-label="Captured frames"></div>
+
+      <div id="verdict" class="verdict" hidden></div>
+
+      <details class="log">
+        <summary>Event log</summary>
+        <ol id="log"></ol>
+      </details>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" role="alert" hidden></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

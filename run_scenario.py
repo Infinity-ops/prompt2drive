@@ -127,8 +127,9 @@ def main():
         max_iterations=args.max_iterations,
         output_root=args.out,
         hardware_profile=args.hardware_profile,
-        text_backend=backend_instance,
-        vision_backend=backend_instance,
+        generator_backend=backend_instance,
+        verifier_backend=backend_instance,
+        reflector_backend=backend_instance,
     )
 
     profile_info = ""

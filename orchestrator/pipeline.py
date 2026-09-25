@@ -31,9 +31,12 @@ import time
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Optional, Any
+from typing import Callable, Optional, Any
 
-import torch
+try:  # torch is only used for an optional CUDA cache flush between iterations
+    import torch
+except ImportError:  # pragma: no cover - UI/replay installs don't ship torch
+    torch = None
 
 from engine.carla_runner import CarlaRunner, ExecutionResult
 from engine.scenario_spec import ScenarioSpec
@@ -44,6 +47,24 @@ from reflector.agent import Reflector, reflect  # Supports both Class or functio
 logger = logging.getLogger("prompt_to_drive.orchestrator")
 
 MAX_ITERATIONS = 3
+
+# Signature of the optional UI hook: status_callback(stage, payload).
+# Stages, in order per iteration (iteration numbers in payloads are 1-based):
+#   run_start, generator, generator_done, engine, engine_done,
+#   verifier, verifier_done, [reflector, reflector_done], ..., done
+# The hook is observational only: it is called OUTSIDE every latency timer
+# and any exception it raises is swallowed, so passing it (or not) cannot
+# change specs, scores, latencies or the persisted pipeline_run.json.
+StatusCallback = Callable[[str, dict], None]
+
+
+def _emit(callback: Optional[StatusCallback], stage: str, payload: dict) -> None:
+    if callback is None:
+        return
+    try:
+        callback(stage, payload)
+    except Exception:  # noqa: BLE001 - a broken UI must never break a run
+        logger.debug("status_callback raised for stage %s", stage, exc_info=True)
 
 
 # -----------------------------------------------------------------------
@@ -168,17 +189,26 @@ class PromptToDrivePipeline:
         self.output_root = Path(output_root)
 
     def run(self, prompt: str, scenario_id: str, mode: str = "full",
-            rng_seed: Optional[int] = None) -> PipelineRun:
+            rng_seed: Optional[int] = None, *,
+            status_callback: Optional[StatusCallback] = None,
+            live_frame_callback: Optional[Callable[[Any], None]] = None) -> PipelineRun:
         t0_total = time.perf_counter()
         run_record = PipelineRun(scenario_id=scenario_id, prompt=prompt, mode=mode)
         refinement_context = ""
         iterations = 1 if mode == "generator_only" else self.max_iterations
+        _emit(status_callback, "run_start", dict(
+            scenario_id=scenario_id, prompt=prompt, mode=mode, max_iterations=iterations,
+        ))
 
         for iteration in range(iterations):
             iter_latencies: dict = {}
             iter_t0 = time.perf_counter()
+            it_no = iteration + 1
 
             # ---- Agent 1: Generator ----------------------------------------
+            _emit(status_callback, "generator", dict(
+                iteration=it_no, refinement_context=refinement_context or None,
+            ))
             with _timer("generator", iter_latencies):
                 spec = self.generator.generate(
                     prompt, refinement_context=refinement_context
@@ -189,14 +219,19 @@ class PromptToDrivePipeline:
                 scenario_id, iteration, iter_latencies["generator_s"],
                 spec.town, spec.weather, spec.event_type,
             )
+            _emit(status_callback, "generator_done", dict(
+                iteration=it_no, spec=spec.model_dump(), latency_s=iter_latencies["generator_s"],
+            ))
 
             # ---- Agent 2: CARLA Engine -------------------------------------
             iter_dir = self.output_root / scenario_id / f"iter_{iteration}"
+            _emit(status_callback, "engine", dict(iteration=it_no, town=spec.town))
             with _timer("engine", iter_latencies):
                 exec_result: ExecutionResult = self.runner.run(
                     spec,
                     scenario_id=f"{scenario_id}_iter{iteration}",
                     output_dir=str(iter_dir),
+                    live_frame_callback=live_frame_callback,
                     rng_seed=rng_seed,
                 )
 
@@ -205,8 +240,14 @@ class PromptToDrivePipeline:
                 scenario_id, iteration, iter_latencies["engine_s"],
                 exec_result.success, len(exec_result.frame_paths),
             )
+            _emit(status_callback, "engine_done", dict(
+                iteration=it_no, success=exec_result.success,
+                n_frames=len(exec_result.frame_paths), error=exec_result.error,
+                latency_s=iter_latencies["engine_s"],
+            ))
 
             # ---- Agent 3: Verifier (Run honestly even in generator_only) ---
+            _emit(status_callback, "verifier", dict(iteration=it_no))
             with _timer("verifier", iter_latencies):
                 verification = self.verifier.verify(
                     original_prompt=prompt,
@@ -221,6 +262,24 @@ class PromptToDrivePipeline:
                 scenario_id, iteration, iter_latencies["verifier_s"],
                 verification.final_score, verification.overall_pass, verification.missing_elements,
             )
+            _emit(status_callback, "verifier_done", dict(
+                iteration=it_no,
+                score=verification.final_score,
+                predicate_agreement=verification.predicate_agreement,
+                predicate_agreement_std=verification.predicate_agreement_std,
+                predicates=verification.vlm_result.predicates,
+                applicable_predicates=verification.applicable_predicates,
+                missing_elements=verification.missing_elements,
+                n_samples=verification.n_samples,
+                log_checks_passed=verification.log_checks_passed,
+                log_checks_total=verification.log_checks_total,
+                execution_success=verification.execution_success,
+                passed=verification.overall_pass,
+                threshold=getattr(self.verifier, "threshold", None),
+                backend=verification.backend_name,
+                notes=verification.vlm_result.notes,
+                latency_s=iter_latencies["verifier_s"],
+            ))
 
             # ---- Reflector latency initialization slot --------------------
             iter_latencies["reflector_s"] = 0.0
@@ -256,6 +315,9 @@ class PromptToDrivePipeline:
 
             # ---- Agent 4: Reflector (Runs if another iteration is scheduled) --
             if iteration < iterations - 1:
+                _emit(status_callback, "reflector", dict(
+                    iteration=it_no, missing_elements=verification.missing_elements,
+                ))
                 with _timer("reflector", iter_latencies):
                     if self.reflector and hasattr(self.reflector, "reflect"):
                         # Class instance approach
@@ -280,10 +342,14 @@ class PromptToDrivePipeline:
                     "[%s] iter=%d Reflector: %.2fs",
                     scenario_id, iteration, iter_latencies["reflector_s"],
                 )
+                _emit(status_callback, "reflector_done", dict(
+                    iteration=it_no, refinement_context=refinement_context,
+                    latency_s=iter_latencies["reflector_s"],
+                ))
 
             # ---- Mid-Scenario Iteration Memory Safety Flush ----
             gc.collect()
-            if torch.cuda.is_available():
+            if torch is not None and torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
         else:
@@ -306,6 +372,12 @@ class PromptToDrivePipeline:
         )
 
         self._persist(run_record)
+        _emit(status_callback, "done", dict(
+            scenario_id=scenario_id,
+            final_status=run_record.final_status,
+            iterations=len(run_record.iterations),
+            total_wall_time_s=run_record.total_wall_time_s,
+        ))
         return run_record
 
     def run_with_pregenerated_spec(self, prompt: str, scenario_id: str, spec: ScenarioSpec, 
@@ -428,7 +500,7 @@ class PromptToDrivePipeline:
 
             # ---- Mid-Scenario Iteration Memory Safety Flush ----
             gc.collect()
-            if torch.cuda.is_available():
+            if torch is not None and torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
         else:
