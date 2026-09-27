@@ -240,9 +240,21 @@ class PromptToDrivePipeline:
                 scenario_id, iteration, iter_latencies["engine_s"],
                 exec_result.success, len(exec_result.frame_paths),
             )
+            if status_callback is not None:
+                spawned = {}
+                try:
+                    with open(exec_result.log_path) as fh:
+                        _sl = json.load(fh)
+                    spawned = dict(vehicles=_sl.get("vehicle_count"),
+                                   pedestrian=_sl.get("pedestrian_spawned"))
+                except Exception:
+                    pass
             _emit(status_callback, "engine_done", dict(
                 iteration=it_no, success=exec_result.success,
                 n_frames=len(exec_result.frame_paths), error=exec_result.error,
+                spawned=spawned if status_callback is not None else None,
+                requested=dict(vehicles=spec.num_vehicles, pedestrian=spec.pedestrian,
+                               cyclist=spec.cyclist, event=spec.event_type),
                 latency_s=iter_latencies["engine_s"],
             ))
 

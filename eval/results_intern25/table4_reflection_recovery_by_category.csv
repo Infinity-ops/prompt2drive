@@ -1,5 +1,5 @@
 failure_category,first_pass_failures,recovered,recovery_rate
-Weather,0,0,nan
-Actor,7,0,0.0
-Behavior,6,2,0.333
-Environment,6,2,0.333
+Weather,2,1,0.5
+Actor,8,0,0.0
+Behavior,21,0,0.0
+Environment,0,0,nan

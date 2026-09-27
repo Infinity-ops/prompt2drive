@@ -15,7 +15,7 @@ from pydantic import ValidationError
 
 from backends.llm_backend import _parse_json_block, get_backend
 from engine.scenario_spec import ScenarioSpec
-from reflector.agent import _correction_for_predicate, reflect
+from reflector.agent import reflect
 from verifier.agent import HybridVerificationResult, VerificationResult
 
 
@@ -67,22 +67,22 @@ def _sample_spec(**overrides) -> ScenarioSpec:
     return ScenarioSpec(**base)
 
 
-def test_correction_for_weather_predicate_is_parameterized():
-    spec = _sample_spec(weather="fog")
-    correction = _correction_for_predicate("weather_correct", spec)
-    assert "fog" in correction.lower()
+def test_correction_for_weather_predicate_is_included():
+    hybrid = _sample_hybrid_result(failed_predicates=["weather_correct"])
+    context = reflect("A pedestrian crosses in the rain near a signal.", hybrid, iteration=1)
+    assert "weather" in context.lower()
 
 
 def test_correction_for_pedestrian_predicate():
-    spec = _sample_spec()
-    correction = _correction_for_predicate("pedestrian_present", spec)
-    assert "pedestrian_present" in correction
+    hybrid = _sample_hybrid_result(failed_predicates=["pedestrian_present"])
+    context = reflect("A pedestrian crosses in the rain near a signal.", hybrid, iteration=1)
+    assert "pedestrian" in context.lower()
 
 
 def test_correction_for_unknown_predicate_has_fallback():
-    spec = _sample_spec()
-    correction = _correction_for_predicate("some_future_predicate", spec)
-    assert "some_future_predicate" in correction
+    hybrid = _sample_hybrid_result(failed_predicates=["some_future_predicate"])
+    context = reflect("A pedestrian crosses in the rain near a signal.", hybrid, iteration=1)
+    assert "some_future_predicate" in context
 
 
 def _sample_hybrid_result(
@@ -114,9 +114,8 @@ def _sample_hybrid_result(
 
 
 def test_reflect_produces_actionable_context():
-    spec = _sample_spec()
     hybrid = _sample_hybrid_result()
-    context = reflect("A pedestrian crosses in the rain near a signal.", spec, hybrid, iteration=1)
+    context = reflect("A pedestrian crosses in the rain near a signal.", hybrid, iteration=1)
     assert "REQUIRED CORRECTIONS" in context
     assert "rain" in context.lower()
 

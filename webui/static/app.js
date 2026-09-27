@@ -15,11 +15,12 @@
     event_observable: "Event is visible",
   };
   const STATUS_TEXT = {
-    passed: ["Scenario verified", "The simulation matches the prompt."],
-    iteration_limit_reached: ["Not verified", "The loop ran out of iterations before every check passed."],
+    passed: ["Passed the Verifier", "The score reached the pass threshold (as judged by this verifier)."],
+    iteration_limit_reached: ["Did not pass", "The loop ran out of iterations before the score reached the threshold."],
     generator_only_complete: ["Generated without the loop", "Verification ran once; no reflection."],
   };
-  const MAX_FRAMES_PER_ITER = 30;
+  const MAX_FRAMES_PER_ITER = 300;
+  const PLAY_FPS = 8;
 
   const $ = (id) => document.getElementById(id);
   const token = new URLSearchParams(location.search).get("token");
@@ -29,9 +30,11 @@
     form: $("prompt-form"), prompt: $("prompt"), count: $("char-count"),
     gen: $("generate-btn"), clear: $("clear-btn"), examples: $("examples"),
     tabs: $("iter-tabs"), lane: $("lane"), frame: $("frame"), empty: $("screen-empty"),
-    liveTag: $("live-tag"), film: $("filmstrip"), verdict: $("verdict"), log: $("log"),
+    liveTag: $("live-tag"), verdict: $("verdict"), log: $("log"),
     toast: $("toast"), mode: $("mode-badge"), carla: $("carla-badge"), backend: $("backend-badge"),
+    play: $("play-btn"), scrub: $("scrub"), fcount: $("frame-count"),
   };
+  let playTimer = null;
 
   let config = null;
   let ws = null;
@@ -134,6 +137,7 @@
     const setStage = (s, st, data) => { const it = iter(n); it.st[s].state = st; Object.assign(it.st[s].data, data || {}); };
     switch (stage) {
       case "run_start":
+        stopPlay();
         state = freshState(); state.running = true; state.prompt = p.prompt;
         el.log.replaceChildren(); log(stage, p, t);
         break;
@@ -165,7 +169,7 @@
     const src = `data:image/jpeg;base64,${msg.jpeg}`;
     it.frames.push(src);
     if (it.frames.length > MAX_FRAMES_PER_ITER) it.frames.shift();
-    if (state.selected === (msg.iteration || 1)) { state.frameSel = null; renderCamera(); }
+    if (state.selected === (msg.iteration || 1) && !playTimer) { state.frameSel = null; renderCamera(); }
   }
 
   // ---------- rendering ----------
@@ -180,7 +184,7 @@
     const ns = Object.keys(state.iters).map(Number).sort((a, b) => a - b);
     el.tabs.replaceChildren(...ns.map((n) => h("button", {
       type: "button", role: "tab", "aria-selected": String(n === state.selected),
-      onclick: () => { state.selected = n; state.follow = n === Math.max(...ns); state.frameSel = null; render(); },
+      onclick: () => { stopPlay(); state.selected = n; state.follow = n === Math.max(...ns); state.frameSel = null; render(); },
     }, `Iteration ${n}`)));
   }
 
@@ -211,11 +215,25 @@
     },
     engine(d, st) {
       if (st === "active") return [h("p", { class: "meta" }, `Loading ${d.town || "the map"} and running the scenario…`)];
-      return [
-        h("p", {}, d.success ? `Ran to completion and captured ${d.n_frames} frame${d.n_frames === 1 ? "" : "s"}.`
+      const out = [
+        h("p", {}, d.success ? `Ran to completion and saved ${d.n_frames} frame${d.n_frames === 1 ? "" : "s"} for the Verifier.`
                              : `The simulation did not complete.${d.error ? " " + d.error : ""}`),
-        d.latency_s != null ? h("p", { class: "meta" }, `Took ${secs(d.latency_s)}`) : null,
       ];
+      if (d.spawned && d.requested) {
+        const v = d.spawned.vehicles, rv = d.requested.vehicles;
+        out.push(h("div", { class: "chips", style: "margin-top:8px" },
+          h("span", { class: `chip ${v < rv ? "no" : ""}` }, "NPC vehicles ", h("b", {}, `${v ?? "?"} of ${rv}`)),
+          d.requested.pedestrian ? h("span", { class: `chip ${d.spawned.pedestrian ? "" : "no"}` }, "pedestrian ",
+            h("b", {}, d.spawned.pedestrian ? "spawned" : "failed")) : null,
+          d.requested.cyclist ? h("span", { class: "chip no" }, "cyclist ", h("b", {}, "not simulated")) : null));
+        if (d.requested.event && d.requested.event !== "none") {
+          out.push(h("p", { class: "meta" },
+            `The Engine does not script the event itself (${String(d.requested.event).replaceAll("_", " ")}); ` +
+            "it is only visible if the traffic happens to produce it."));
+        }
+      }
+      if (d.latency_s != null) out.push(h("p", { class: "meta" }, `Took ${secs(d.latency_s)}`));
+      return out;
     },
     verifier(d, st) {
       if (st === "active") return [h("p", { class: "meta" }, "Asking the vision model about the captured frames…")];
@@ -254,7 +272,16 @@
       return out;
     },
     reflector(d, st) {
-      if (st === "skipped") return [h("p", { class: "meta" }, "Not needed: every check passed.")];
+      if (st === "skipped") {
+        const v = state.iters[state.selected]?.st.verifier.data || {};
+        const failed = (v.missing_elements || []).length;
+        if (!failed) return [h("p", { class: "meta" }, "Not needed: every check passed.")];
+        return [h("p", { class: "meta" },
+          `Not needed: the score (${pct(v.score)}) reached the pass threshold` +
+          (v.threshold != null ? ` (${pct(v.threshold)})` : "") +
+          `, so the loop stops even though ${failed} check${failed === 1 ? "" : "s"} failed. ` +
+          "The threshold tolerates one miss by design; start the UI with --threshold 1.0 to make every failed check trigger the Reflector.")];
+      }
       if (st === "active") return [h("p", { class: "meta" }, `Diagnosing: ${(d.missing_elements || []).map((k) => PRED_LABELS[k] || k).join(", ") || "low score"}`)];
       return [h("pre", { class: "correction" }, d.refinement_context || "(no correction text)"),
               d.latency_s != null ? h("p", { class: "meta" }, `Took ${secs(d.latency_s)}`) : null];
@@ -265,7 +292,7 @@
   function renderCamera() {
     const it = state.iters[state.selected];
     const frames = it ? it.frames : [];
-    const idx = state.frameSel ?? frames.length - 1;
+    const idx = Math.min(state.frameSel ?? frames.length - 1, frames.length - 1);
     if (frames.length) {
       el.frame.src = frames[idx]; el.frame.hidden = false; el.empty.hidden = true;
       el.liveTag.hidden = false;
@@ -273,11 +300,30 @@
     } else {
       el.frame.hidden = true; el.empty.hidden = false; el.liveTag.hidden = true;
     }
-    el.film.replaceChildren(...frames.map((src, i) => h("button", {
-      type: "button", "aria-label": `Show frame ${i + 1}`, "aria-current": String(i === idx),
-      onclick: () => { state.frameSel = i; renderCamera(); },
-    }, h("img", { src, alt: "" }))));
+    el.scrub.max = String(Math.max(frames.length - 1, 0));
+    el.scrub.value = String(Math.max(idx, 0));
+    el.scrub.disabled = frames.length < 2;
+    el.play.disabled = frames.length < 2 || state.running;
+    el.play.textContent = playTimer ? "Pause" : "Play";
+    el.fcount.textContent = `${frames.length} frame${frames.length === 1 ? "" : "s"}`;
   }
+
+  function stopPlay() { if (playTimer) { clearInterval(playTimer); playTimer = null; } }
+  function togglePlay() {
+    if (playTimer) { stopPlay(); renderCamera(); return; }
+    const frames = state.iters[state.selected]?.frames || [];
+    if (frames.length < 2) return;
+    if ((state.frameSel ?? frames.length - 1) >= frames.length - 1) state.frameSel = 0;
+    playTimer = setInterval(() => {
+      const n = state.iters[state.selected]?.frames.length || 0;
+      if ((state.frameSel ?? 0) >= n - 1) { stopPlay(); renderCamera(); return; }
+      state.frameSel = (state.frameSel ?? 0) + 1;
+      renderCamera();
+    }, 1000 / PLAY_FPS);
+    renderCamera();
+  }
+  el.play.addEventListener("click", togglePlay);
+  el.scrub.addEventListener("input", () => { stopPlay(); state.frameSel = Number(el.scrub.value); renderCamera(); });
 
   function renderVerdict() {
     const f = state.final;

@@ -48,6 +48,11 @@ class CarlaRunner:
         self.host = host
         self.port = port
         self.timeout = timeout
+        # UI preview only: how often (simulated seconds) the newest camera
+        # image is handed to live_frame_callback. Independent of the frames
+        # saved for the Verifier (profile.capture_every_s), so it cannot
+        # change verification. Evaluation runs pass no callback -> no effect.
+        self.preview_every_s = 0.2
         self.profile: HardwareProfile = get_profile(hardware_profile)
         self._client = None
         self._world = None
@@ -71,6 +76,96 @@ class CarlaRunner:
         logger.info("Connected to CARLA at %s:%s [hardware_profile=%s, TM_PORT=%d]",
                     self.host, self.port, self.profile.name, TM_PORT)
 
+    def _reload_map(self, town: str, scenario_id: str) -> None:
+        """
+        Switch maps without crashing the server.
+
+        The previous sequence put the WORLD into asynchronous mode but left
+        the Traffic Manager in synchronous mode, destroyed actors one by one,
+        and then called load_world(). The server segfaulted right after
+        "Map mismatch", and only on runs that switched towns (Town01 <->
+        Town02), which made the crash look random. On the CARLA 0.9.16 /
+        RTX 3090 setup, tools/carla_load_matrix.py showed: a map load with no
+        Traffic Manager ever created passes; a load with a live TM crashes;
+        shutting the TM down first passes once but not reliably on repeat.
+        Map switches are therefore best avoided at runtime (see
+        tools/start_demo.sh and webui --pin-town); this method is the
+        least-bad sequence when a switch is unavoidable.
+
+        Order used here: unregister vehicles from TM -> TM async -> world
+        async -> batch destroy -> TM shut_down -> load_world -> wait for the
+        new episode -> new TM ->
+        world sync -> TM sync -> first tick. Each step is logged so a crash
+        shows exactly where it happened.
+        """
+        import carla
+
+        def step(msg: str) -> None:
+            logger.info("[%s] reload %s: %s", scenario_id, town, msg)
+
+        step("1/7 unregister vehicles from Traffic Manager")
+        actors = self._world.get_actors()
+        for v in actors.filter("vehicle.*"):
+            try:
+                v.set_autopilot(False, TM_PORT)
+            except Exception:
+                pass
+        if self._world.get_settings().synchronous_mode:
+            try:
+                self._world.tick()  # let the TM process the unregistration
+            except Exception:
+                pass
+
+        step("2/7 Traffic Manager + world -> asynchronous")
+        try:
+            if self._tm is not None:
+                self._tm.set_synchronous_mode(False)
+        except Exception:
+            pass
+        settings = self._world.get_settings()
+        settings.synchronous_mode = False
+        settings.fixed_delta_seconds = None
+        self._world.apply_settings(settings)
+
+        step("3/7 destroy leftover actors")
+        leftovers = [a.id for a in actors
+                     if a.type_id.startswith(("vehicle.", "walker.", "sensor.", "controller."))]
+        if leftovers:
+            try:
+                self._client.apply_batch_sync([carla.command.DestroyActor(i) for i in leftovers], False)
+            except Exception:
+                logger.debug("[%s] batch destroy before reload failed", scenario_id, exc_info=True)
+        time.sleep(1.0)
+
+        # The Traffic Manager must not exist while the map loads: on this
+        # setup a map load with a live TM (synchronous or not) segfaults the
+        # server or the client, while the same load with no TM passes
+        # (tools/carla_load_matrix.py, cases A-C). Shut it down, recreate it after.
+        if self._tm is not None:
+            try:
+                self._tm.shut_down()
+            except Exception:
+                logger.debug("[%s] tm.shut_down() failed", scenario_id, exc_info=True)
+            self._tm = None
+        time.sleep(0.5)
+
+        step("4/7 load_world (Traffic Manager shut down)")
+        self._client.set_timeout(180.0)
+        self._world = self._client.load_world(town)
+        step("5/7 wait for new episode")
+        self._world.wait_for_tick()
+        self._client.set_timeout(self.timeout)
+
+        step("6/7 world -> synchronous, new Traffic Manager")
+        settings = self._world.get_settings()
+        settings.synchronous_mode = True
+        settings.fixed_delta_seconds = self.profile.fixed_delta_seconds
+        self._world.apply_settings(settings)
+        self._tm = self._client.get_trafficmanager(TM_PORT)
+        self._tm.set_synchronous_mode(True)
+        self._world.tick()
+        step("7/7 done")
+
     def _world_alive(self) -> bool:
         try:
             if self._world is None:
@@ -88,6 +183,20 @@ class CarlaRunner:
                 logger.warning("spawn_point_index %s invalid, falling back to %s", index, fallback)
                 return spawn_points[fallback]
         return spawn_points[0]
+
+    def _release_vehicle(self, actor) -> None:
+        """Unregister a vehicle from the Traffic Manager, then destroy it.
+        The TM runs inside THIS Python process; destroying vehicles it still
+        drives leaves it with dangling actors, which can segfault the client
+        on the next map load."""
+        if actor is None:
+            return
+        try:
+            if actor.is_alive:
+                actor.set_autopilot(False, TM_PORT)
+        except Exception:
+            pass
+        self._safe_destroy(actor)
 
     def _safe_destroy(self, actor) -> None:
         if actor is None:
@@ -147,30 +256,7 @@ class CarlaRunner:
 
             if current_map != spec.town:
                 logger.info("[%s] Map mismatch. Forcing clean map reload.", scenario_id)
-                pre = self._world.get_settings()
-                pre.synchronous_mode = False
-                self._world.apply_settings(pre)
-                
-                for actor in self._world.get_actors().filter('*sensor*'):
-                    try:
-                        if actor.is_alive:
-                            actor.stop()
-                            actor.destroy()
-                    except Exception: pass
-                for actor in self._world.get_actors().filter('*vehicle*'): self._safe_destroy(actor)
-                for actor in self._world.get_actors().filter('*walker*'): self._safe_destroy(actor)
-                
-                time.sleep(2.0)
-                self._client.set_timeout(180.0)
-                self._world = self._client.load_world(spec.town)
-                time.sleep(2.0)
-                self._world = self._client.get_world()
-                self._client.set_timeout(self.timeout)
-
-                settings = self._world.get_settings()
-                settings.synchronous_mode = True
-                settings.fixed_delta_seconds = self.profile.fixed_delta_seconds
-                self._world.apply_settings(settings)
+                self._reload_map(spec.town, scenario_id)
             else:
                 all_actors = self._world.get_actors()
                 for actor in all_actors:
@@ -282,6 +368,8 @@ class CarlaRunner:
                     self._tm.ignore_vehicles_percentage(ego_vehicle, 100.0)
 
             state_log["vehicle_count"] = len(npc_list)
+            if spawned_count < spec.num_vehicles:
+                logger.warning("[%s] Only %d of %d NPC vehicles spawned.", scenario_id, spawned_count, spec.num_vehicles)
 
             # ---- Step 6c: Pedestrian Logic ----
             if spec.pedestrian:
@@ -293,13 +381,22 @@ class CarlaRunner:
                     fwd = ego_t.get_forward_vector()
                     right = ego_t.get_right_vector()
                     
-                    spawn_loc = carla.Location(
-                        x=ego_t.location.x + fwd.x * 12.0 + right.x * 2.5,
-                        y=ego_t.location.y + fwd.y * 12.0 + right.y * 2.5,
-                        z=ego_t.location.z + 1.2
-                    )
                     spawn_rot = carla.Rotation(pitch=0.0, yaw=ego_t.rotation.yaw + 180.0, roll=0.0)
-                    walker_actor = self._world.try_spawn_actor(walker_bp, carla.Transform(spawn_loc, spawn_rot))
+                    # First offset is the original placement; the others are
+                    # only tried if it is blocked (previously the pedestrian
+                    # then silently did not appear).
+                    for ahead, side in ((12.0, 2.5), (15.0, 3.0), (9.0, 3.0), (18.0, 2.0)):
+                        spawn_loc = carla.Location(
+                            x=ego_t.location.x + fwd.x * ahead + right.x * side,
+                            y=ego_t.location.y + fwd.y * ahead + right.y * side,
+                            z=ego_t.location.z + 1.2
+                        )
+                        walker_actor = self._world.try_spawn_actor(walker_bp, carla.Transform(spawn_loc, spawn_rot))
+                        if walker_actor is not None:
+                            break
+                    if walker_actor is None:
+                        logger.warning("[%s] Pedestrian could not be spawned (all 4 positions blocked).", scenario_id)
+                        state_log["errors"].append("pedestrian_spawn_failed")
 
                     if walker_actor is not None:
                         state_log["pedestrian_spawned"] = True
@@ -315,6 +412,8 @@ class CarlaRunner:
             capture_every = max(1, int(self.profile.capture_every_s / self.profile.fixed_delta_seconds))
             saved_frames = []
             execution_failed = False
+            preview_every = max(1, int(round(self.preview_every_s / self.profile.fixed_delta_seconds)))
+            last_preview_frame = -1
 
             for t in range(ticks):
                 if not ego_vehicle.is_alive:
@@ -339,9 +438,15 @@ class CarlaRunner:
                             img.save_to_disk(str(fp))
                             saved_frames.append(str(fp))
                         except RuntimeError: pass
-                        if live_frame_callback is not None:
-                            try: live_frame_callback(img)
-                            except Exception: pass
+
+                if live_frame_callback is not None and t % preview_every == 0:
+                    try:
+                        newest = max(list(self.captured_frames.keys()))
+                        if newest != last_preview_frame:
+                            last_preview_frame = newest
+                            live_frame_callback(self.captured_frames[newest])
+                    except Exception:
+                        pass
 
             state_log["execution_completed"] = not execution_failed
             log_path = out / "state_log.json"
@@ -381,9 +486,9 @@ class CarlaRunner:
                 self._safe_destroy(walker_controller)
 
             self._safe_destroy(walker_actor)
-            for npc in npc_list: self._safe_destroy(npc)
+            for npc in npc_list: self._release_vehicle(npc)
             self._safe_destroy(camera)
-            self._safe_destroy(ego_vehicle)
+            self._release_vehicle(ego_vehicle)
 
             if self._world is not None:
                 try: self._world.tick()

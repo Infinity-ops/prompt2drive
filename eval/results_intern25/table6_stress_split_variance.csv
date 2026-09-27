@@ -1,4 +1,4 @@
 dataset_split,n_scenarios,mean_score,std_dev
-low_stress_scenarios,25,0.9167,0.1041
+low_stress_scenarios,25,0.83,0.0905
 hard_stress_scenarios,0,0.0,0.0
 performance_gap_mean,-,0.0,-

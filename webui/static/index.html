@@ -24,7 +24,24 @@
   </header>
 
   <main class="layout">
-    <section class="left">
+    <section class="stage" aria-label="Simulation">
+      <figure class="camera">
+        <div class="screen">
+          <img id="frame" alt="Camera frame from the CARLA simulation" hidden>
+          <div id="screen-empty" class="screen-empty">
+            <strong>No scene yet</strong>
+            <span>Generate a scenario and the Engine's camera frames appear here.</span>
+          </div>
+          <span id="live-tag" class="live-tag" hidden>Iteration 1</span>
+        </div>
+        <div class="player">
+          <button type="button" id="play-btn" class="ghost" disabled>Play</button>
+          <input type="range" id="scrub" min="0" max="0" value="0" disabled aria-label="Frame">
+          <span id="frame-count" class="muted">0 frames</span>
+        </div>
+        <figcaption class="muted">Camera preview from the Engine, about 5 frames per simulated second. The Verifier judges its own sampled frames.</figcaption>
+      </figure>
+
       <form id="prompt-form" class="prompt" autocomplete="off">
         <label for="prompt">Scenario</label>
         <textarea id="prompt" rows="3" maxlength="500"
@@ -39,7 +56,9 @@
         <p class="hint muted">Enter to generate, Shift+Enter for a new line.</p>
         <div id="examples" class="examples" aria-label="Example prompts"></div>
       </form>
+    </section>
 
+    <aside class="side" aria-label="Closed loop and event log">
       <div class="loop-head">
         <h2>Closed loop</h2>
         <div id="iter-tabs" class="iter-tabs" role="tablist" aria-label="Iterations"></div>
@@ -79,29 +98,14 @@
           </div>
         </li>
       </ol>
-    </section>
-
-    <section class="right">
-      <figure class="camera">
-        <div class="screen">
-          <img id="frame" alt="Camera frame from the CARLA simulation" hidden>
-          <div id="screen-empty" class="screen-empty">
-            <strong>No scene yet</strong>
-            <span>Generate a scenario and the Engine's camera frames appear here.</span>
-          </div>
-          <span id="live-tag" class="live-tag" hidden>Iteration 1</span>
-        </div>
-        <figcaption class="muted">Frames the Engine captured for the Verifier.</figcaption>
-      </figure>
-      <div id="filmstrip" class="filmstrip" aria-label="Captured frames"></div>
 
       <div id="verdict" class="verdict" hidden></div>
 
-      <details class="log">
+      <details class="log" open>
         <summary>Event log</summary>
         <ol id="log"></ol>
       </details>
-    </section>
+    </aside>
   </main>
 
   <div id="toast" class="toast" role="alert" hidden></div>

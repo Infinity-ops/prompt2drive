@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -70,6 +71,8 @@ class UIConfig:
     backend: str = "openai"
     verifier_backend: Optional[str] = None   # defaults to backend
     hardware_profile: Optional[str] = None
+    pin_town: Optional[str] = None           # demo safety: never switch maps
+    threshold: Optional[float] = None        # UI-only override of the Verifier pass threshold
     carla_host: str = "localhost"
     carla_port: int = 2000
     max_iterations: int = 3
@@ -109,6 +112,8 @@ class Hub:
         self.busy = threading.Lock()
         self.stop_flag = threading.Event()
         self.current_iteration = 0
+        self.current_scenario: Optional[str] = None
+        self.preview_count: dict[int, int] = {}
         self._pipeline = None
 
     # ---------------- thread -> asyncio bridge ----------------
@@ -123,10 +128,29 @@ class Hub:
     def emit(self, stage: str, payload: dict) -> None:
         if "iteration" in payload:
             self.current_iteration = payload["iteration"]
+        if stage == "run_start":
+            self.current_scenario = payload.get("scenario_id")
+            self.preview_count = {}
         self.publish({"type": "event", "stage": stage, "payload": payload, "t": time.time()})
 
     def emit_frame(self, jpeg_b64: str, iteration: Optional[int] = None) -> None:
-        self.publish({"type": "frame", "iteration": iteration or self.current_iteration, "jpeg": jpeg_b64})
+        it = iteration or self.current_iteration
+        self.publish({"type": "frame", "iteration": it, "jpeg": jpeg_b64})
+        if self.cfg.mode == "live" and self.current_scenario:
+            self._save_preview(jpeg_b64, it)
+
+    def _save_preview(self, jpeg_b64: str, iteration: int) -> None:
+        """Keep the UI preview frames next to the run (iter_N/preview/), so a
+        replay of this run later shows the same smooth clip. The Verifier's
+        frames in iter_N/frames/ are untouched."""
+        try:
+            k = self.preview_count.get(iteration, 0)
+            self.preview_count[iteration] = k + 1
+            d = Path(self.cfg.output_root) / self.current_scenario / f"iter_{iteration - 1}" / "preview"
+            d.mkdir(parents=True, exist_ok=True)
+            (d / f"p_{k:04d}.jpg").write_bytes(base64.b64decode(jpeg_b64))
+        except Exception:  # noqa: BLE001 - preview is best-effort
+            logger.debug("preview save failed", exc_info=True)
 
     async def broadcaster(self) -> None:
         assert self.queue is not None
@@ -153,7 +177,7 @@ class Hub:
         gen_backend = get_backend(cfg.backend)
         ver_backend = get_backend(cfg.verifier_backend) if cfg.verifier_backend else gen_backend
         runner = CarlaRunner(host=cfg.carla_host, port=cfg.carla_port, hardware_profile=cfg.hardware_profile)
-        return PromptToDrivePipeline(
+        pipeline = PromptToDrivePipeline(
             runner=runner,
             max_iterations=cfg.max_iterations,
             output_root=cfg.output_root,
@@ -162,6 +186,18 @@ class Hub:
             verifier_backend=ver_backend,
             reflector_backend=gen_backend,
         )
+        if cfg.threshold is not None:
+            # Raising tau is the paper's "forced-reflection" condition: the
+            # Reflector then engages whenever any check fails. UI-only knob.
+            pipeline.verifier.threshold = cfg.threshold
+            logger.info("Verifier pass threshold set to %.2f for this UI session.", cfg.threshold)
+        if cfg.pin_town:
+            # Every spec is clamped to one town, so the Engine never reloads a
+            # map between runs. UI-only knob; evaluation scripts don't use it.
+            pipeline.preferred_towns = (cfg.pin_town,)
+            pipeline.generator.preferred_towns = (cfg.pin_town,)
+            logger.info("Pinned to %s: map reloads between runs are disabled.", cfg.pin_town)
+        return pipeline
 
     def _on_carla_frame(self, image) -> None:
         try:
@@ -253,6 +289,7 @@ def create_app(cfg: UIConfig) -> FastAPI:
             verifier_backend=(cfg.verifier_backend or cfg.backend) if cfg.mode == "live" else None,
             hardware_profile=cfg.hardware_profile,
             max_iterations=cfg.max_iterations,
+            threshold=cfg.threshold,
             carla=dict(host=cfg.carla_host, port=cfg.carla_port, reachable=reachable),
             examples=_examples(cfg),
             max_prompt_chars=MAX_PROMPT_CHARS,
@@ -303,6 +340,10 @@ def main() -> None:
     p.add_argument("--verifier-backend", choices=["openai", "huggingface", "local"], default=None,
                    help="Backend for the Verifier only (defaults to --backend).")
     p.add_argument("--hardware-profile", choices=list(PIPELINE_PROFILES), default=None)
+    p.add_argument("--pin-town", choices=["Town01", "Town02"], default=None,
+                   help="Clamp every scenario to one town so CARLA never switches maps (demo safety).")
+    p.add_argument("--threshold", type=float, default=None,
+                   help="Verifier pass threshold for this UI session (paper default 0.75; 1.0 = every check must pass).")
     p.add_argument("--carla-host", default="localhost")
     p.add_argument("--carla-port", type=int, default=2000)
     p.add_argument("--max-iterations", type=int, default=int(os.getenv("P2D_MAX_ITERATIONS", "3")))
@@ -316,7 +357,7 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     cfg = UIConfig(
         mode=args.mode, backend=args.backend, verifier_backend=args.verifier_backend,
-        hardware_profile=args.hardware_profile, carla_host=args.carla_host, carla_port=args.carla_port,
+        hardware_profile=args.hardware_profile, pin_town=args.pin_town, threshold=args.threshold, carla_host=args.carla_host, carla_port=args.carla_port,
         max_iterations=args.max_iterations, output_root=args.out, runs_dir=args.runs_dir,
         token=os.getenv("P2D_UI_TOKEN") or None,
     )

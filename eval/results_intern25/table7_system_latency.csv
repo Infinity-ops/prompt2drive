@@ -1,6 +1,6 @@
 metric,seconds
-avg_generator_s,0.28
-avg_engine_s,4.27
-avg_verifier_s,1.92
-avg_reflector_s,0.37
-avg_wall_time_s,6.84
+avg_generator_s,0.16
+avg_engine_s,4.06
+avg_verifier_s,3.8
+avg_reflector_s,0.31
+avg_wall_time_s,8.34

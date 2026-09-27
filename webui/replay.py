@@ -29,7 +29,9 @@ FrameEmit = Callable[[str, int], None]
 # run plays back in well under a minute.
 SPEEDUP = 6.0
 MIN_STAGE_S, MAX_STAGE_S = 0.6, 4.0
-MAX_FRAMES_PER_ITER = 12
+MAX_FRAMES_PER_ITER = 12        # sparse Verifier frames (frames/*.png)
+MAX_PREVIEW_PER_ITER = 150      # smooth UI preview (preview/*.jpg), when recorded
+PREVIEW_FRAME_S = 0.12
 
 
 @dataclass
@@ -96,9 +98,13 @@ def replay_run(run: RecordedRun, emit: Emit, emit_frame: FrameEmit,
         emit("generator_done", dict(iteration=n, spec=spec, latency_s=lat.get("generator_s")))
 
         emit("engine", dict(iteration=n, town=spec.get("town")))
-        frames = sorted((run.path / f"iter_{it.get('iteration', idx)}" / "frames").glob("frame_*.png"))
-        frames = frames[:MAX_FRAMES_PER_ITER]
-        per_frame = min(max((lat.get("engine_s") or 0) / SPEEDUP, 1.0), 8.0) / max(len(frames), 1)
+        it_dir = run.path / f"iter_{it.get('iteration', idx)}"
+        preview = sorted((it_dir / "preview").glob("p_*.jpg"))[:MAX_PREVIEW_PER_ITER]
+        if preview:
+            frames, per_frame = preview, PREVIEW_FRAME_S
+        else:
+            frames = sorted((it_dir / "frames").glob("frame_*.png"))[:MAX_FRAMES_PER_ITER]
+            per_frame = min(max((lat.get("engine_s") or 0) / SPEEDUP, 1.0), 8.0) / max(len(frames), 1)
         for fp in frames:
             if should_stop():
                 return
@@ -110,7 +116,8 @@ def replay_run(run: RecordedRun, emit: Emit, emit_frame: FrameEmit,
         if not frames:
             _pace(lat.get("engine_s"), sleep)
         emit("engine_done", dict(iteration=n, success=it.get("execution_success", False),
-                                 n_frames=len(frames), error=None, latency_s=lat.get("engine_s")))
+                                 n_frames=len(list((it_dir / "frames").glob("frame_*.png"))),
+                                 error=None, latency_s=lat.get("engine_s")))
 
         emit("verifier", dict(iteration=n))
         _pace(lat.get("verifier_s"), sleep)

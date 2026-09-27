@@ -152,10 +152,25 @@ class Generator:
                 self.preferred_towns
                 and parsed.town not in self.preferred_towns
             ):
-                raise ValueError(
-                    f"Generator selected forbidden town '{parsed.town}'. "
-                    f"Allowed towns: {', '.join(self.preferred_towns)}"
+                # Smaller local models (e.g. 4B VLMs) often copy a town from
+                # the few-shot examples and ignore the hardware constraint.
+                # The town is a hardware choice, not part of the user's
+                # intent, so clamp it deterministically (as documented for
+                # P2D_LOWSPEC_MODE) instead of failing the whole run. Every
+                # other field -- weather, actors, event -- is kept as generated.
+                # This path only triggers where the old code raised, so it
+                # cannot change any previously completed run.
+                forbidden = parsed.town
+                allowed = self.preferred_towns[0]
+                logger.warning(
+                    "Generator selected forbidden town '%s' (allowed: %s); clamping to %s.",
+                    forbidden, ", ".join(self.preferred_towns), allowed,
                 )
+                note = f"[Town clamped {forbidden} -> {allowed} by hardware profile]"
+                parsed = parsed.model_copy(update={
+                    "town": allowed,
+                    "notes": f"{parsed.notes} {note}".strip() if parsed.notes else note,
+                })
 
             cache[cache_key] = parsed.model_dump()
             return parsed

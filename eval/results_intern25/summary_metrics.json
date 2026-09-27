@@ -7,7 +7,7 @@
   "table2_semantic_alignment": {
     "overall": {
       "generator_only": 0.732,
-      "full": 0.917
+      "full": 0.83
     },
     "by_difficulty": {
       "generator_only": {
@@ -16,9 +16,9 @@
         "medium": 0.787
       },
       "full": {
-        "easy": 0.9,
-        "hard": 0.883,
-        "medium": 0.968
+        "easy": 0.867,
+        "hard": 0.807,
+        "medium": 0.838
       }
     },
     "by_weather": {
@@ -30,11 +30,11 @@
         "rain": 0.649
       },
       "full": {
-        "clear": 0.91,
-        "cloudy": 1.0,
-        "fog": 0.844,
-        "night": 0.875,
-        "rain": 0.932
+        "clear": 0.792,
+        "cloudy": 0.885,
+        "fog": 0.812,
+        "night": 0.833,
+        "rain": 0.839
       }
     },
     "by_event": {
@@ -47,73 +47,73 @@
         "red_light_violation": 0.729
       },
       "full": {
-        "crossing": 0.857,
-        "emergency_brake": 0.844,
-        "lane_change": 0.969,
+        "crossing": 0.786,
+        "emergency_brake": 0.812,
+        "lane_change": 0.812,
         "obstruction": 1.0,
-        "overtaking": 0.944,
-        "red_light_violation": 0.958
+        "overtaking": 0.833,
+        "red_light_violation": 0.812
       }
     }
   },
   "table3_failure_taxonomy": {
     "Weather": {
+      "first_pass_count": 2,
+      "first_pass_pct": 6.5,
+      "final_count": 1,
+      "final_pct": 3.3
+    },
+    "Actor": {
+      "first_pass_count": 8,
+      "first_pass_pct": 25.8,
+      "final_count": 8,
+      "final_pct": 26.7
+    },
+    "Behavior": {
+      "first_pass_count": 21,
+      "first_pass_pct": 67.7,
+      "final_count": 21,
+      "final_pct": 70.0
+    },
+    "Environment": {
       "first_pass_count": 0,
       "first_pass_pct": 0.0,
       "final_count": 0,
       "final_pct": 0.0
-    },
-    "Actor": {
-      "first_pass_count": 7,
-      "first_pass_pct": 36.8,
-      "final_count": 7,
-      "final_pct": 46.7
-    },
-    "Behavior": {
-      "first_pass_count": 6,
-      "first_pass_pct": 31.6,
-      "final_count": 4,
-      "final_pct": 26.7
-    },
-    "Environment": {
-      "first_pass_count": 6,
-      "first_pass_pct": 31.6,
-      "final_count": 4,
-      "final_pct": 26.7
     }
   },
   "table4_reflection_recovery": {
     "Weather": {
-      "first_pass_failures": 0,
-      "recovered": 0,
-      "recovery_rate": NaN
+      "first_pass_failures": 2,
+      "recovered": 1,
+      "recovery_rate": 0.5
     },
     "Actor": {
-      "first_pass_failures": 7,
+      "first_pass_failures": 8,
       "recovered": 0,
       "recovery_rate": 0.0
     },
     "Behavior": {
-      "first_pass_failures": 6,
-      "recovered": 2,
-      "recovery_rate": 0.333
+      "first_pass_failures": 21,
+      "recovered": 0,
+      "recovery_rate": 0.0
     },
     "Environment": {
-      "first_pass_failures": 6,
-      "recovered": 2,
-      "recovery_rate": 0.333
+      "first_pass_failures": 0,
+      "recovered": 0,
+      "recovery_rate": NaN
     }
   },
   "table4_overall_recovery": {
     "n_scenarios": 25,
-    "first_pass_rate": 0.88,
+    "first_pass_rate": 0.92,
     "after_reflection_rate": 0.96,
-    "overall_recovery_rate": 0.667
+    "overall_recovery_rate": 0.5
   },
   "table5_per_predicate_alignment": {
     "weather_correct": {
       "go": 0.84,
-      "full": 1.0
+      "full": 0.96
     },
     "fog_density_violation": {
       "go": 1.0,
@@ -129,19 +129,19 @@
     },
     "vehicles_present": {
       "go": 0.136,
-      "full": 0.818
+      "full": 1.0
     },
     "event_observable": {
       "go": 0.32,
-      "full": 0.84
+      "full": 0.16
     }
   },
   "table6_stress_split_variance": {
     "applicable": true,
     "low_stress_scenarios": {
       "n": 25,
-      "mean": 0.9167,
-      "std": 0.1041
+      "mean": 0.83,
+      "std": 0.0905
     },
     "hard_stress_scenarios": {
       "n": 0,
@@ -152,10 +152,10 @@
   },
   "table7_system_latency": {
     "n_scenarios": 25,
-    "avg_generator_s": 0.28,
-    "avg_engine_s": 4.27,
-    "avg_verifier_s": 1.92,
-    "avg_reflector_s": 0.37,
-    "avg_wall_time_s": 6.84
+    "avg_generator_s": 0.16,
+    "avg_engine_s": 4.06,
+    "avg_verifier_s": 3.8,
+    "avg_reflector_s": 0.31,
+    "avg_wall_time_s": 8.34
   }
 }
