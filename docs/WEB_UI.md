@@ -31,7 +31,7 @@ replay reads, so everything you run live can be replayed later.
 source .venv/bin/activate
 pip install -r requirements.txt -r requirements-ui.txt
 
-# terminal 1: CARLA (low-VRAM flags from docs/TROUBLESHOOTING_LOW_VRAM.md)
+# terminal 1: CARLA (low-VRAM flags from docs/TROUBLESHOOTING.md)
 ./CarlaUE4.sh -quality-level=Low -RenderOffScreen -opengl
 
 # terminal 2: vLLM, if you use --backend local

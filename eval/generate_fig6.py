@@ -31,9 +31,9 @@ def extract_scores(summary_json_path):
 
 def main():
     # Paths to your processed outputs matching your terminal commands
-    llama_dir = Path("eval/results_llama32/summary_metrics.json")
-    intern_dir = Path("eval/results_intern25/summary_metrics.json")
-    qwen_dir = Path("eval/results_qwen25/summary_metrics.json")
+    llama_dir = Path("eval/paper_results/llama32/summary_metrics.json")
+    intern_dir = Path("eval/paper_results/internvl25/summary_metrics.json")
+    qwen_dir = Path("eval/paper_results/qwen25/summary_metrics.json")
     
     # In case summary_metrics doesn't store lists, let's load from the directory runs directly 
     # to find the raw "verification_score" from each scenario's final iteration.

@@ -1,8 +1,0 @@
-2026-07-14 16:00:22,322 INFO Loaded Main Dataset: baseline=25, generator_only=25, full=25 scenarios
-2026-07-14 16:00:22,322 INFO Table 1 (success rate): {'Baseline (free-form code gen)': 0.28, 'Generator-only (schema, no reflection)': 1.0, 'Full Prompt-to-Drive (closed-loop)': 1.0}
-2026-07-14 16:00:22,322 INFO Table 2 overall: {'generator_only': 0.732, 'full': 0.83}
-2026-07-14 16:00:22,322 INFO Table 3 (failure taxonomy): {'Weather': {'first_pass_count': 2, 'first_pass_pct': 6.5, 'final_count': 1, 'final_pct': 3.3}, 'Actor': {'first_pass_count': 8, 'first_pass_pct': 25.8, 'final_count': 8, 'final_pct': 26.7}, 'Behavior': {'first_pass_count': 21, 'first_pass_pct': 67.7, 'final_count': 21, 'final_pct': 70.0}, 'Environment': {'first_pass_count': 0, 'first_pass_pct': 0.0, 'final_count': 0, 'final_pct': 0.0}}
-2026-07-14 16:00:22,322 INFO Table 4 (recovery by category): {'Weather': {'first_pass_failures': 2, 'recovered': 1, 'recovery_rate': 0.5}, 'Actor': {'first_pass_failures': 8, 'recovered': 0, 'recovery_rate': 0.0}, 'Behavior': {'first_pass_failures': 21, 'recovered': 0, 'recovery_rate': 0.0}, 'Environment': {'first_pass_failures': 0, 'recovered': 0, 'recovery_rate': nan}}
-2026-07-14 16:00:22,323 WARNING Directory outputs/stress_full does not exist; skipping.
-2026-07-14 16:00:22,323 INFO Processing Grounded Stress Dataset Slices...
-2026-07-14 16:00:22,634 INFO All metrics successfully synchronized to eval/results_intern25/

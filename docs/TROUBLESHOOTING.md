@@ -105,3 +105,14 @@ What this profile changes (`engine/hardware_profiles.py`):
 If you publish results produced under reduced settings (lower resolution, fewer
 NPCs, Town01/Town02 only, 10 Hz physics), state the hardware profile, CARLA
 version and launch flags alongside the numbers.
+
+## CARLA 0.9.16: segfault when switching maps
+
+On CARLA 0.9.16, loading a new map (`client.load_world`) can crash the server or
+the Python client once a Traffic Manager has existed on that server.
+`tools/carla_load_matrix.py` reproduces it: a map load with no Traffic Manager
+passes, a load with a live one crashes.
+
+The web UI therefore pins one town per session: `tools/start_demo.sh` starts a
+fresh CARLA server, loads the town before any Traffic Manager exists, and runs
+the UI with `--pin-town`.

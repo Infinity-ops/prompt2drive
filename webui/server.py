@@ -61,7 +61,7 @@ logger = logging.getLogger("prompt_to_drive.webui")
 REPO_ROOT = Path(__file__).resolve().parent.parent
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 MAX_PROMPT_CHARS = 500
-# Profiles valid in BOTH engine/hardware_profiles.py and engine/hardware_config.py
+# Profiles offered in the UI (see engine/hardware_profiles.py)
 PIPELINE_PROFILES = ("low_vram_2gb", "low_vram_2gb_signals")
 
 

@@ -13,7 +13,7 @@ or set P2D_HARDWARE_PROFILE=low_vram_2gb in .env.
 
 This does NOT fix CARLA server-side crashes by itself -- you must ALSO
 launch the CARLA server binary with matching flags. See
-docs/TROUBLESHOOTING_LOW_VRAM.md for the full checklist, including the
+docs/TROUBLESHOOTING.md for the full checklist, including the
 exact CarlaUE4 launch flags for a 2GB-VRAM Maxwell GPU.
 """
 from __future__ import annotations
@@ -103,3 +103,14 @@ def get_profile(name: str | None) -> HardwareProfile:
     if name not in PROFILES:
         raise ValueError(f"Unknown hardware profile '{name}'. Options: {list(PROFILES)}")
     return PROFILES[name]
+
+
+def get_preferred_towns(name: str) -> tuple[str, ...]:
+    """Towns the Generator may choose under this profile (smallest maps first)."""
+    return get_profile(name).preferred_towns
+
+
+def get_profile_info(name: str) -> dict:
+    """Human-readable summary of a profile, for CLI output."""
+    prof = get_profile(name)
+    return {"name": prof.name, "description": prof.notes, "preferred_towns": prof.preferred_towns}

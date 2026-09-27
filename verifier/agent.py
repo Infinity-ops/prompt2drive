@@ -25,7 +25,7 @@ fraction of applicable predicates that hold:
 
 This number is fully explainable: for any score, you can list exactly
 which predicates passed and which failed, in plain language, without
-reference to model internals. See docs/SEMANTIC_VERIFICATION_METRIC.md
+reference to model internals. See docs/EVALUATION.md
 for the full formal definition used in the paper's Methods section.
 
 The hybrid final score combines this predicate agreement with the

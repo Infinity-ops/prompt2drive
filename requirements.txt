@@ -8,9 +8,10 @@ matplotlib>=3.8
 openai>=1.40
 huggingface_hub>=0.24
 
-# Optional desktop UI (ui/app.py)
-pygame>=2.5
-
 # CARLA is NOT installed from PyPI here. Install the wheel that ships with your
 # CARLA server so client and server versions match (tested with 0.9.16):
 #   pip install <CARLA_ROOT>/PythonAPI/carla/dist/carla-0.9.16-cp310-*.whl
+
+# Tests
+pytest>=8.0
+httpx>=0.27   # fastapi TestClient in tests/test_webui.py

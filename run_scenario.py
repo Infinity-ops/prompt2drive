@@ -77,7 +77,7 @@ def main():
     parser.add_argument("--out", default="outputs")
     parser.add_argument(
         "--hardware-profile",
-        choices=["high_performance", "standard", "low_vram_2gb", "low_vram_2gb_signals"],
+        choices=["default", "low_vram_2gb", "low_vram_2gb_signals", "headless_ci"],
         default=None,
         help="Hardware constraints for town selection and camera resolution. "
              "'low_vram_2gb_signals' restricts to Town01 for 2GB VRAM machines.",
@@ -134,7 +134,7 @@ def main():
 
     profile_info = ""
     if args.hardware_profile:
-        from engine.hardware_config import get_profile_info
+        from engine.hardware_profiles import get_profile_info
         info = get_profile_info(args.hardware_profile)
         profile_info = f" [Hardware: {info['description']}]"
 

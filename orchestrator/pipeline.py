@@ -152,7 +152,7 @@ class PromptToDrivePipeline:
         verifier_backend: Optional[Any] = None,
         reflector_backend: Optional[Any] = None,
     ):
-        from engine.hardware_config import get_preferred_towns
+        from engine.hardware_profiles import get_preferred_towns
 
         self.hardware_profile = hardware_profile
         self.preferred_towns = None

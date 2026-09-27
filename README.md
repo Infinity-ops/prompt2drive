@@ -15,7 +15,7 @@
 [Quick start](#quick-start) ·
 [How it works](#how-it-works) ·
 [Results](#results) ·
-[Reproduce the paper](docs/REPRODUCING.md) ·
+[Reproduce the paper](docs/EVALUATION.md) ·
 [Limitations](#limitations) ·
 [Cite](#citation)
 
@@ -94,7 +94,7 @@ flowchart LR
 | **Verifier** | Deterministic state-log checks + VLM predicates over sampled frames (majority vote over 3 calls) → SAS ∈ [0, 1]; pass if SAS ≥ τ = 0.75 | [`verifier/`](verifier/) |
 | **Reflector** | Maps each failed predicate to a targeted correction for the next Generator call; bounded by `--max-iterations` | [`reflector/`](reflector/) |
 
-**Scoring, as implemented.** `SAS = 0.5 · VLM predicate agreement + 0.3 · state-log checks passed + 0.2 · execution success`. Every score in the traces and tables comes from this formula ([`verifier/agent.py`](verifier/agent.py), full definition in [docs/SEMANTIC_VERIFICATION_METRIC.md](docs/SEMANTIC_VERIFICATION_METRIC.md)).
+**Scoring, as implemented.** `SAS = 0.5 · VLM predicate agreement + 0.3 · state-log checks passed + 0.2 · execution success`. Every score in the traces and tables comes from this formula ([`verifier/agent.py`](verifier/agent.py), full definition in [docs/EVALUATION.md](docs/EVALUATION.md#metric-definition)).
 
 Model access sits behind one small interface ([`backends/llm_backend.py`](backends/llm_backend.py)): OpenAI, Hugging Face Inference, or any local vLLM server. Every run writes a complete trace to `outputs/<scenario_id>/pipeline_run.json`: prompt, spec, predicates, reflections, latencies and memory.
 
@@ -122,7 +122,7 @@ Paired bootstrap (10,000 resamples): Llama − Qwen = 0.175, 95% CI [0.148, 0.19
 
 **What this means.** Llama scores every scenario, standard or adversarial, at 1.000, so it cannot tell easy from hard. Only Qwen's score moves with stress-set difficulty. That shows sensitivity, not accuracy: no human-annotated ground truth backs these predicates. An SAS of 0.83 means *"this verifier's weighted checks came out at 0.83"*, not *"83% semantically correct"*.
 
-Per-predicate rates, reflection statistics and latency are in the paper and in [`eval/results_*`](eval/).
+Per-predicate rates, reflection statistics and latency are in the paper and in [`eval/paper_results/`](eval/paper_results/).
 
 ## Repository layout
 
@@ -134,13 +134,12 @@ verifier/       Agent 2: log predicates + VLM judge → SAS
 reflector/      Agent 3: failed predicates → targeted correction
 orchestrator/   the closed loop, tracing and latency accounting
 webui/          browser UI (FastAPI + WebSocket), live or replay
-ui/             desktop UI (pygame)
-eval/           baseline, full evaluation, metrics; results_* = paper artefacts
-scenarios/      benchmark (25), stress set (10), low-spec subset
+eval/           evaluation scripts; paper_results/ = the paper's tables per verifier
+scenarios/      benchmark (25) and adversarial stress set (10)
 demo_runs/      recorded runs used by replay mode and the Docker demo
 tools/          start_demo.sh and CARLA diagnostics
 tests/          unit tests, no CARLA / GPU / API key needed
-docs/           web UI, metric definition, low-VRAM troubleshooting, reproduction
+docs/           WEB_UI, EVALUATION (reproduce + metric), TROUBLESHOOTING
 ```
 
 ## Limitations
@@ -151,7 +150,7 @@ Stated plainly so nobody has to discover them:
 - **No human ground truth.** Verifier results measure sensitivity to stress conditions, not agreement with human judgment.
 - **Reflection is rarely exercised** on this benchmark (1 to 2 of 25 scenarios per verifier), and correcting one predicate can break another (predicate regression).
 - **One Generator/Reflector model** (GPT-4o) and N = 25 + 10 scenarios, with no repeated-run variance.
-- **CARLA 0.9.16 map switching** can segfault once a Traffic Manager exists. The web UI therefore pins one town per session (`--pin-town`, used by `tools/start_demo.sh`). Diagnostics: `tools/carla_load_matrix.py`.
+- **CARLA 0.9.16 map switching** can segfault once a Traffic Manager exists. The web UI therefore pins one town per session (`--pin-town`, used by `tools/start_demo.sh`). Details: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
 
 ## Citation
 
@@ -166,6 +165,14 @@ Stated plainly so nobody has to discover them:
 ```
 
 
+## Contributing
+
+Issues and pull requests are welcome: new scenario types, predicates, backends or UI features.
+Please run `pytest tests/ -q` first (no CARLA, GPU or API key needed), and say in the PR if a
+change could alter a ScenarioSpec, a score or a latency compared with the paper's runs.
+For bugs, include the CARLA version (server and pip client), the command, and the
+`pipeline_run.json` of the failing scenario.
+
 ## License
 
-[MIT](LICENSE). Contributions are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md).
+[MIT](LICENSE)
