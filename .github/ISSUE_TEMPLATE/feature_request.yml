@@ -1,0 +1,14 @@
+name: Feature request
+description: A new scenario type, predicate, backend or UI feature
+labels: [enhancement]
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: What do you want to do, and what is missing today?
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: Proposed approach (optional)

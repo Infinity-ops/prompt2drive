@@ -1,0 +1,47 @@
+{
+  "scenario_id": "s06_iter0",
+  "spec": {
+    "weather": "rain",
+    "town": "Town03",
+    "num_vehicles": 5,
+    "pedestrian": true,
+    "event_type": "crossing",
+    "duration_s": 15,
+    "spawn_point_index": 8,
+    "cyclist": false,
+    "notes": "Town03 signalized junction, heavy rain, pedestrian crossing."
+  },
+  "hardware_profile": "low_vram_2gb",
+  "weather_api_called": "rain",
+  "pedestrian_spawned": true,
+  "vehicle_count": 5,
+  "actors": [
+    {
+      "type": "ego_vehicle",
+      "id": 595
+    },
+    {
+      "type": "npc_vehicle",
+      "id": 597
+    },
+    {
+      "type": "npc_vehicle",
+      "id": 598
+    },
+    {
+      "type": "npc_vehicle",
+      "id": 599
+    },
+    {
+      "type": "npc_vehicle",
+      "id": 600
+    },
+    {
+      "type": "npc_vehicle",
+      "id": 601
+    }
+  ],
+  "execution_completed": true,
+  "errors": [],
+  "map_loaded": "Town03"
+}

@@ -1,0 +1,87 @@
+{
+  "scenario_id": "s18_iter0",
+  "spec": {
+    "weather": "fog",
+    "town": "Town04",
+    "num_vehicles": 15,
+    "pedestrian": false,
+    "event_type": "emergency_brake",
+    "duration_s": 20,
+    "spawn_point_index": 10,
+    "cyclist": false,
+    "notes": "Town04 dual carriageway suitable for multi-vehicle emergency braking in fog."
+  },
+  "hardware_profile": "low_vram_2gb",
+  "weather_api_called": "fog",
+  "pedestrian_spawned": false,
+  "vehicle_count": 15,
+  "actors": [
+    {
+      "type": "ego_vehicle",
+      "id": 451
+    },
+    {
+      "type": "npc_vehicle",
+      "id": 453
+    },
+    {
+      "type": "npc_vehicle",
+      "id": 454
+    },
+    {
+      "type": "npc_vehicle",
+      "id": 455
+    },
+    {
+      "type": "npc_vehicle",
+      "id": 456
+    },
+    {
+      "type": "npc_vehicle",
+      "id": 457
+    },
+    {
+      "type": "npc_vehicle",
+      "id": 458
+    },
+    {
+      "type": "npc_vehicle",
+      "id": 459
+    },
+    {
+      "type": "npc_vehicle",
+      "id": 460
+    },
+    {
+      "type": "npc_vehicle",
+      "id": 461
+    },
+    {
+      "type": "npc_vehicle",
+      "id": 462
+    },
+    {
+      "type": "npc_vehicle",
+      "id": 463
+    },
+    {
+      "type": "npc_vehicle",
+      "id": 464
+    },
+    {
+      "type": "npc_vehicle",
+      "id": 465
+    },
+    {
+      "type": "npc_vehicle",
+      "id": 466
+    },
+    {
+      "type": "npc_vehicle",
+      "id": 467
+    }
+  ],
+  "execution_completed": true,
+  "errors": [],
+  "map_loaded": "Town04"
+}

@@ -1,0 +1,6 @@
+# Web UI (webui/). Replay mode needs ONLY these: no CARLA, GPU, torch or model SDKs.
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pillow>=10.0
+numpy>=1.24
+python-dotenv>=1.0

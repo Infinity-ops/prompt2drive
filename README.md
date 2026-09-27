@@ -1,409 +1,174 @@
+<div align="center">
+
 # Prompt-to-Drive
 
-**A verification-aware, closed-loop framework for AI-driven scenario synthesis in autonomous driving simulation.**
+**Type a driving scenario in plain English. Three AI agents build it in CARLA, check it, and fix it.**
 
-Prompt-to-Drive converts natural-language driving scenario descriptions into executable CARLA simulations, automatically verifies whether the resulting simulation semantically matches the original intent using a vision-language model, and iteratively refines the scenario when it doesn't — closing the loop between generative AI and trustworthy simulation-driven validation.
+[![tests](https://github.com/Infinity-ops/prompt2drive/actions/workflows/tests.yml/badge.svg)](https://github.com/OWNER/prompt2drive/actions/workflows/tests.yml)
+![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11-3776AB?logo=python&logoColor=white)
+![CARLA](https://img.shields.io/badge/CARLA-0.9.16-1b2530)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+![Paper](https://img.shields.io/badge/paper-CAIESA%20%40%20ESWEEK%202026-e8b20e)
 
-This repository (`prompt2drive`) is the reference implementation accompanying the paper:
+<img src="docs/assets/demo.gif" alt="Web UI: a prompt is turned into a CARLA scene while the Generator, Verifier and Reflector report step by step" width="100%">
 
-> **Prompt-to-Drive: Closed-Loop Semantic Verification for Trustworthy AI-Synthesized Autonomous Driving Scenarios**
+[Quick start](#quick-start) ·
+[How it works](#how-it-works) ·
+[Results](#results) ·
+[Reproduce the paper](docs/REPRODUCING.md) ·
+[Limitations](#limitations) ·
+[Cite](#citation)
 
-
-<details>
-<summary><b>Abstract</b></summary>
-
-Simulation-driven validation is central to the development of software-defined vehicles and autonomous driving systems, yet authoring diverse, semantically precise test scenarios at scale remains a manual bottleneck. Large language models can synthesize CARLA scenarios from natural-language descriptions, but existing approaches treat generation and execution as an open loop: the resulting simulation is rarely checked against the intent that produced it, and execution-success metrics do not capture whether the scenario is semantically correct. This creates a verification gap that undermines simulation as evidence in a safety case. We present Prompt-to-Drive, a closed-loop framework comprising a Generator agent that maps prompts to a constrained, schema-validated scenario representation; a deterministic CARLA execution engine; a Verifier agent that combines vision-language reasoning over rendered frames with deterministic simulation-log checks into a hybrid semantic alignment score; and a Reflector agent that performs targeted, root-cause-specific regeneration when verification fails. The framework is backend-agnostic, supporting both proprietary and open-weight model providers, and includes an interactive interface exposing per-agent pipeline status and alignment scores for inspection. We evaluate on a 20-scenario natural-language benchmark spanning five weather conditions, six driving events, and three difficulty levels against free-form and schema-only baselines. *[Results pending — see Evidence Ledger in the project notes; this placeholder is intentionally left unfilled until real experiments are run against a live CARLA instance.]* We discuss the framework's scope, hardware constraints, and limitations for trustworthy simulation-based CPS validation.
-
-</details>
-
-```
-┌─────────────────┐     ┌───────────┐     ┌─────────────┐     ┌──────────────────┐
-│ "A pedestrian    │────▶│ Generator │────▶│ ScenarioSpec │────▶│ CARLA Simulator  │
-│  crosses near a  │     │  (LLM)    │     │   (JSON)     │     │  (deterministic) │
-│  signal in rain" │     └───────────┘     └─────────────┘     └────────┬─────────┘
-└─────────────────┘            ▲                                       │
-                                │                                       ▼
-                          ┌─────┴──────┐                       ┌───────────────┐
-                          │ Reflector  │◀──────────────────────│   Verifier     │
-                          │ (targeted  │   refinement_context  │ (VLM + log     │
-                          │ correction)│   on failure           │  hybrid score) │
-                          └────────────┘                       └───────────────┘
-```
-
-The Generator and Verifier sit behind a pluggable backend interface, supporting both **OpenAI** (proprietary, GPT-4o) and **Hugging Face** (open-weight models via the Inference API) — see [Backends and cost](#backends-and-cost) below.
+</div>
 
 ---
 
-## Why this exists
+Most LLM-to-simulator pipelines stop at *"the scenario ran"*. Prompt-to-Drive also asks **"did it run what was asked for?"**, and measures how much that answer depends on which model does the checking.
 
-Direct "ask an LLM to write CARLA code" pipelines hallucinate: non-compilable scripts, wrong weather, missing actors, events that never actually occur in the rendered simulation. Existing scenario-generation tools execute scenarios but rarely check whether what *ran* matches what was *asked for*. Prompt-to-Drive treats that check — semantic alignment between natural language intent and simulation output — as a first-class, measurable engineering requirement.
+- **Schema, not free-form code.** The Generator writes a validated `ScenarioSpec`, not raw CARLA Python. Executable success goes from **28% to 100%** on our 25-scenario benchmark.
+- **Verification as its own layer.** A Verifier scores every run with a *Semantic Alignment Score* (SAS) that combines deterministic state-log predicates with a vision-language model (VLM) judge.
+- **Swappable judges.** The same recorded runs scored by three open VLMs differ by up to **0.175 SAS**, and one of them gives a perfect score to every adversarial scenario. Report a verifier sensitivity check with your alignment numbers.
+- **A closed loop you can watch.** When a check fails, the Reflector writes a targeted correction and the loop runs again, with every step visible in the web UI.
 
-Three agents make this work:
+## Quick start
 
-| Agent | Role | Key idea |
+### Option A: watch recorded runs (no CARLA, no GPU, 2 minutes)
+
+```bash
+git clone https://github.com/OWNER/prompt2drive.git && cd prompt2drive
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements-ui.txt
+python -m webui.server --mode replay --runs-dir demo_runs
+# open http://127.0.0.1:8080 and pick a recorded prompt
+```
+
+Or with Docker: `docker build -t prompt2drive-demo . && docker run -p 8080:8080 prompt2drive-demo`.
+
+Replay re-streams real recorded runs (`pipeline_run.json` + frames). Nothing is regenerated or re-scored.
+
+### Option B: run it live
+
+You need CARLA 0.9.16, a GPU, and either an OpenAI key or a local [vLLM](https://github.com/vllm-project/vllm) server.
+
+```bash
+pip install -r requirements.txt
+pip install <CARLA_ROOT>/PythonAPI/carla/dist/carla-0.9.16-cp310-*.whl
+cp .env.example .env            # choose backends, set keys / model names
+
+# terminal 1: a vision model on vLLM (example: Qwen2.5-VL-7B-AWQ)
+VLLM_USE_FLASHINFER_SAMPLER=0 vllm serve <path>/Qwen2.5-VL-7B-Instruct-AWQ \
+  --served-model-name Qwen/Qwen2.5-VL-7B-Instruct --max-model-len 4096 \
+  --gpu-memory-utilization 0.45 --max-num-seqs 1 --max-num-batched-tokens 4096 \
+  --enforce-eager --limit-mm-per-prompt '{"image":3}'
+
+# terminal 2: starts CARLA, loads the map, opens the web UI
+tools/start_demo.sh
+```
+
+`tools/start_demo.sh --threshold 1.0` makes every failed check trigger the Reflector, which is the best way to watch the whole loop. Details and the other models: [docs/WEB_UI.md](docs/WEB_UI.md).
+
+A single scenario from the command line:
+
+```bash
+python run_scenario.py --prompt "A pedestrian crosses near a traffic signal in rain." \
+  --hardware-profile low_vram_2gb
+```
+
+## How it works
+
+```mermaid
+flowchart LR
+    P["Prompt<br/><i>'A pedestrian crosses<br/>in the rain'</i>"] --> G
+    G["<b>Agent 1: Generator</b><br/>LLM → ScenarioSpec<br/>(schema-validated JSON)"] --> E
+    E["<b>Engine</b><br/>CARLA, deterministic<br/>frames + state log"] --> V
+    V["<b>Agent 2: Verifier</b><br/>log predicates + VLM judge<br/>→ SAS"] -->|"SAS ≥ τ"| OK(["Result + trace"])
+    V -->|"SAS < τ"| R["<b>Agent 3: Reflector</b><br/>targeted correction"]
+    R -->|"refinement context"| G
+    V -.->|"max iterations"| OK
+```
+
+| Stage | What it does | Where |
 |---|---|---|
-| **Generator** | NL prompt → structured `ScenarioSpec` JSON | Constrained schema, not free-form code — bounds the hallucination surface |
-| **Verifier** | Simulation output → semantic alignment score | Hybrid: VLM visual reasoning + deterministic state-log validation |
-| **Reflector** | Failed verification → targeted refinement instructions | Root-cause mapping, not blind retry — corrects only the fields that failed |
+| **Generator** | Prompt → `ScenarioSpec` (weather, town, vehicles, pedestrian, event, duration), validated with Pydantic before anything touches CARLA | [`generator/`](generator/) |
+| **Engine** | Turns the spec into CARLA API calls under a hardware profile, records frames and a structured state log | [`engine/`](engine/) |
+| **Verifier** | Deterministic state-log checks + VLM predicates over sampled frames (majority vote over 3 calls) → SAS ∈ [0, 1]; pass if SAS ≥ τ = 0.75 | [`verifier/`](verifier/) |
+| **Reflector** | Maps each failed predicate to a targeted correction for the next Generator call; bounded by `--max-iterations` | [`reflector/`](reflector/) |
 
----
+**Scoring, as implemented.** `SAS = 0.5 · VLM predicate agreement + 0.3 · state-log checks passed + 0.2 · execution success`. Every score in the traces and tables comes from this formula ([`verifier/agent.py`](verifier/agent.py), full definition in [docs/SEMANTIC_VERIFICATION_METRIC.md](docs/SEMANTIC_VERIFICATION_METRIC.md)).
+
+Model access sits behind one small interface ([`backends/llm_backend.py`](backends/llm_backend.py)): OpenAI, Hugging Face Inference, or any local vLLM server. Every run writes a complete trace to `outputs/<scenario_id>/pipeline_run.json`: prompt, spec, predicates, reflections, latencies and memory.
+
+## Results
+
+From the paper, on a 25-scenario benchmark (5 weather × 6 event types × 3 difficulty levels) and a 10-scenario adversarial stress set. Generator and Reflector: GPT-4o. Every number is computed by `eval/compute_metrics.py` from the preserved traces.
+
+**Executability**
+
+| Condition | Executable success |
+|---|---|
+| Free-form CARLA code (baseline) | 0.28 |
+| Schema-constrained Generator | 1.00 |
+| Full closed loop | 1.00 |
+
+**Same traces, different judge**
+
+| Verifier | Mean SAS, generator-only | Mean SAS, closed loop | Stress-set mean (σ) | Standard − stress gap |
+|---|---|---|---|---|
+| Llama-3.2-11B-Vision-Instruct | 0.732 | 1.000 | 1.000 (0.000) | 0.000 |
+| Qwen2.5-VL-7B-AWQ | 0.732 | 0.825 | 0.758 (0.147) | 0.067 |
+| InternVL2.5-8B-AWQ | 0.732 | 0.830 | 0.833 (0.091) | −0.003 |
+
+Paired bootstrap (10,000 resamples): Llama − Qwen = 0.175, 95% CI [0.148, 0.198]; Llama − InternVL = 0.170 [0.133, 0.205]; Qwen − InternVL = −0.005 [−0.035, 0.028].
+
+**What this means.** Llama scores every scenario, standard or adversarial, at 1.000, so it cannot tell easy from hard. Only Qwen's score moves with stress-set difficulty. That shows sensitivity, not accuracy: no human-annotated ground truth backs these predicates. An SAS of 0.83 means *"this verifier's weighted checks came out at 0.83"*, not *"83% semantically correct"*.
+
+Per-predicate rates, reflection statistics and latency are in the paper and in [`eval/results_*`](eval/).
 
 ## Repository layout
 
 ```
-prompt2drive/
-├── backends/
-│   └── llm_backend.py      # Pluggable OpenAI / Hugging Face backend abstraction
-├── engine/                 # Deterministic CARLA execution layer
-│   ├── scenario_spec.py    #   ScenarioSpec schema (the JSON intermediate representation)
-│   ├── carla_runner.py     #   ScenarioSpec -> CARLA API calls, frame + log capture
-│   └── hardware_profiles.py#   Resolution/quality/actor-density presets for modest GPUs
-├── generator/
-│   └── agent.py            # Agent 1: prompt -> ScenarioSpec (+ free-form baseline generator)
-├── verifier/
-│   └── agent.py            # Agent 2: hybrid VLM + log semantic verification
-├── reflector/
-│   └── agent.py            # Agent 3: targeted root-cause refinement
-├── orchestrator/
-│   └── pipeline.py         # Closed-loop orchestration (Algorithm 1 in the paper)
-├── ui/
-│   └── app.py               # Interactive pygame UI: live agent status + semantic score panel
-├── webui/                  # Browser UI (FastAPI + WebSocket): live or replay of recorded runs
-├── demo_runs/              # Recorded runs shipped with the public replay demo
-├── scenarios/
-│   └── dataset.json        # 20-scenario evaluation set with ground-truth labels
-├── eval/
-│   ├── run_baseline.py             # Experiment comparator: free-form code gen, no schema/loop
-│   ├── run_full_evaluation.py      # Runs generator_only and full conditions, single backend
-│   ├── run_backend_comparison.py   # Runs full conditions across BOTH backends side-by-side
-│   └── compute_metrics.py          # Produces Table 1, Table 2, Figure 3, Figure 4
-├── tests/
-│   └── test_core.py        # Unit tests (no CARLA / no API key required)
-├── docs/
-│   └── TROUBLESHOOTING_LOW_VRAM.md  # Segfault diagnosis for low-VRAM GPUs (e.g. Quadro M620)
-├── run_scenario.py         # Single-scenario CLI entry point
-├── requirements.txt
-├── .env.example
-└── README.md
+backends/       model access: OpenAI, Hugging Face, local vLLM
+generator/      Agent 1: prompt → ScenarioSpec
+engine/         ScenarioSpec schema, CARLA runner, hardware profiles
+verifier/       Agent 2: log predicates + VLM judge → SAS
+reflector/      Agent 3: failed predicates → targeted correction
+orchestrator/   the closed loop, tracing and latency accounting
+webui/          browser UI (FastAPI + WebSocket), live or replay
+ui/             desktop UI (pygame)
+eval/           baseline, full evaluation, metrics; results_* = paper artefacts
+scenarios/      benchmark (25), stress set (10), low-spec subset
+demo_runs/      recorded runs used by replay mode and the Docker demo
+tools/          start_demo.sh and CARLA diagnostics
+tests/          unit tests, no CARLA / GPU / API key needed
+docs/           web UI, metric definition, low-VRAM troubleshooting, reproduction
 ```
 
----
+## Limitations
 
-## Prerequisites
+Stated plainly so nobody has to discover them:
 
-You said you already have CARLA installed — good, that's the only heavy dependency. You will additionally need:
+- **Events and cyclists are not scripted by the Engine.** `event_type` and `cyclist` are generated, validated and verified, but the Engine does not choreograph them. The ego drives on autopilot, and an event is only observable if traffic produces it. This is consistent with the low `event_observable` rates in the paper.
+- **No human ground truth.** Verifier results measure sensitivity to stress conditions, not agreement with human judgment.
+- **Reflection is rarely exercised** on this benchmark (1 to 2 of 25 scenarios per verifier), and correcting one predicate can break another (predicate regression).
+- **One Generator/Reflector model** (GPT-4o) and N = 25 + 10 scenarios, with no repeated-run variance.
+- **CARLA 0.9.16 map switching** can segfault once a Traffic Manager exists. The web UI therefore pins one town per session (`--pin-town`, used by `tools/start_demo.sh`). Diagnostics: `tools/carla_load_matrix.py`.
 
-1. **Python 3.10+**
-2. **The CARLA Python API wheel matching your CARLA version**, installed into your virtualenv:
-   ```bash
-   pip install <CARLA_ROOT>/PythonAPI/carla/dist/carla-<version>-cp310-cp310-<platform>.whl
-   ```
-3. **API credentials for at least one backend** — see the next section for what you actually need and what it costs.
-
----
-
-## Hardware profiles (for modest/older GPUs)
-
-If you're running on a laptop or mobile workstation GPU with limited VRAM (e.g., a Quadro M620, 2GB), CARLA's default settings will commonly segfault. Use the `low_vram_2gb` profile, which lowers camera resolution, caps concurrent NPC vehicles, slows the simulation tick rate, and restricts scenarios to CARLA's smallest maps:
-
-```bash
-python run_scenario.py --prompt "..." --hardware-profile low_vram_2gb
-```
-
-This alone does not fix server-side CARLA crashes — you must also launch the CARLA server itself with matching flags (`-opengl -quality-level=Low -RenderOffScreen`). **See [docs/TROUBLESHOOTING_LOW_VRAM.md](docs/TROUBLESHOOTING_LOW_VRAM.md) for the full diagnosis and fix, including exactly why the Vulkan renderer is the most common segfault cause on this GPU class.** If you run your evaluation under reduced settings, report this explicitly in your paper's Experimental Setup — it's a disclosed constraint, not something to hide, and is itself relevant context for a CPS/embedded-systems audience.
-
----
-
-## Backends and cost
-
-Prompt-to-Drive does not require OpenAI specifically. The Generator and Verifier are built against a small backend interface (`backends/llm_backend.py`), with two implementations shipped:
-
-| | OpenAI backend | Hugging Face backend |
-|---|---|---|
-| **Setup** | `OPENAI_API_KEY` (pay-as-you-go) | `HUGGINGFACE_API_TOKEN` (free tier works for many models; a **PRO account raises rate limits and unlocks more hosted endpoints**, which is relevant since you already have one) |
-| **Generator model (default)** | `gpt-4o-2024-08-06` | `meta-llama/Meta-Llama-3.1-8B-Instruct` |
-| **Verifier model (default)** | `gpt-4o` (vision) | `Qwen/Qwen2-VL-7B-Instruct` |
-| **Structured output** | Native (`response_format`) — very reliable JSON | Prompted JSON + a repair parser (open-weight models occasionally wrap JSON in prose) |
-| **Cost** | Per-token, billed by OpenAI. For the full 20-scenario eval (3 iterations max, ~3 images per verification call) budget roughly **$3–6 USD total**. | Covered by your existing HF Pro subscription / free inference quota for most of the default models above. No separate API key purchase needed. |
-
-**Do you need to pay for OPENAI_API_KEY?** Yes — OpenAI's API is billed separately from ChatGPT Plus/Pro and has no meaningful free tier beyond a small initial trial credit for new accounts. You will need to add a payment method and the usage above (a few dollars for the full evaluation) will be billed to it.
-
-**Should you use OpenAI, Hugging Face, or both for the paper?** Both — and the repository is built to make that easy:
-
-- Using **only Hugging Face** (since you already have HF Pro) is a completely valid, zero-marginal-cost way to run every experiment in this repo. Set `P2D_TEXT_BACKEND=huggingface` and `P2D_VISION_BACKEND=huggingface` in your `.env` and skip OpenAI entirely.
-- Using **both** and reporting them side-by-side (`eval/run_backend_comparison.py`) is the stronger choice for the paper specifically: it converts "we built a pipeline around GPT-4o" into "we built a backend-agnostic architecture, and report consistent results across a proprietary and an open-weight stack" — a genuine generalizability claim that CAIESA reviewers (an embedded-systems / CPS audience, not an LLM-leaderboard audience) tend to value, since portability across model providers and licensing regimes is itself a practical deployment concern for safety-critical CPS tooling.
-- If you only have budget/time for one, **Hugging Face alone is sufficient** to support every claim in the paper except the cross-backend robustness one. Drop that one paragraph from the Discussion section if you skip the comparison run.
-
-To select a backend, set environment variables in `.env` (see `.env.example`) or pass `--backend openai` / `--backend huggingface` on any eval script or `run_scenario.py`.
-
----
-
-## Setup
-
-```bash
-git clone https://github.com/<your-username>/prompt2drive.git
-cd prompt2drive
-
-python3.10 -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
-
-pip install -r requirements.txt
-pip install <CARLA_ROOT>/PythonAPI/carla/dist/carla-<version>-...whl
-
-cp .env.example .env
-# edit .env: set P2D_TEXT_BACKEND / P2D_VISION_BACKEND and the matching key(s)
-```
-
-### Sanity check (no CARLA server needed)
-
-```bash
-pytest tests/ -v
-```
-
-Expected output: 13 tests pass. These exercise the `ScenarioSpec` schema validation, the Reflector's correction-lookup logic, the Verifier's score arithmetic, and the backend abstraction's JSON-repair parser — all pure Python, no network calls, no CARLA connection. If this fails, something is wrong with your Python environment, not your CARLA setup or your API keys.
-
----
-
-## Running a single scenario
-
-Start your CARLA server first, in a separate terminal:
-
-```bash
-# e.g. ./CarlaUE4.sh -RenderOffScreen   (headless, recommended for speed)
-```
-
-Then, from the repo root with your venv active:
-
-```bash
-python run_scenario.py \
-  --prompt "A pedestrian suddenly crosses near a traffic signal in rainy weather." \
-  --scenario-id demo01 \
-  --mode full \
-  --backend huggingface
-```
-
-(Omit `--backend` to use whatever `P2D_TEXT_BACKEND` / `P2D_VISION_BACKEND` are set to in your `.env`, which defaults to `openai` if unset.)
-
-### What to expect
-
-- Console output streams the Generator's chosen `ScenarioSpec`, the simulation running in CARLA (you'll see it in the CARLA window if not headless), and the Verifier's score.
-- A typical run takes **30–90 seconds per iteration** (dominated by simulation duration + one or two backend calls), and up to 3 iterations if reflection is triggered.
-- Final printed summary looks like:
-
-  ```
-  ============================================================
-  Final status:   passed
-  Iterations:     1
-  Final score:    0.86
-  Passed:         True
-  Missing elems:  []
-  Full record:    outputs/demo01/pipeline_run.json
-  ============================================================
-  ```
-
-- If verification fails on the first attempt, you'll see a second iteration begin automatically with a `[REFLECTION]` block visible in the logs (`logging.INFO` level) explaining exactly what's being corrected and why.
-- All artifacts (frames, state logs, the full `pipeline_run.json` trace) are saved under `outputs/<scenario_id>/`.
-
-Try `--mode generator_only` to see the same prompt run through the schema-constrained Generator and Engine **without** the verification/reflection loop — useful for understanding what the closed loop actually buys you.
-
----
-
-## Running on constrained hardware
-
-CARLA's own recommended minimum is a GPU with roughly 6GB VRAM. If you're running on a mobile workstation GPU in the 2GB-VRAM class (e.g. an NVIDIA Quadro M620, GeForce 940MX/950M-class, or similar Maxwell-era mobile chips), you will likely hit out-of-memory errors or unusable frame rates at default settings. This repo includes a low-spec mode to make a first end-to-end pass realistic on that hardware.
-
-**1. Launch CARLA itself in low-spec mode:**
-
-```bash
-./CarlaUE4.sh -quality-level=Low -RenderOffScreen -ResX=480 -ResY=270
-```
-
-`-RenderOffScreen` skips the display compositor entirely (you don't need to see the CARLA window — the engine captures frames programmatically). `-quality-level=Low` disables most post-processing and shadow/reflection passes, which are the most VRAM-hungry parts of the renderer.
-
-**2. Enable low-spec mode in `.env`:**
-
-```bash
-P2D_LOWSPEC_MODE=1
-P2D_CAMERA_WIDTH=480
-P2D_CAMERA_HEIGHT=270
-```
-
-With `P2D_LOWSPEC_MODE=1`, the Generator clamps every scenario to `Town01`/`Town02` (CARLA's smallest maps — far fewer background buildings and draw calls than Town03–05) and caps `num_vehicles` at 8, regardless of what the LLM would otherwise choose. This bounds render load without changing the semantic content of the scenario.
-
-**3. Use the reduced 8-scenario subset for your first pass:**
-
-```bash
-python -m eval.run_baseline --dataset scenarios/dataset_lowspec.json --out outputs/baseline
-python -m eval.run_full_evaluation --dataset scenarios/dataset_lowspec.json --mode generator_only --out outputs/generator_only
-python -m eval.run_full_evaluation --dataset scenarios/dataset_lowspec.json --mode full --out outputs/full
-python -m eval.compute_metrics --dataset scenarios/dataset_lowspec.json --baseline outputs/baseline/baseline_results.json --generator-only outputs/generator_only --full outputs/full --out eval/results_lowspec
-```
-
-`scenarios/dataset_lowspec.json` is an 8-scenario subset of the full dataset, chosen to avoid the busier Town03/04/05 maps. Once this completes successfully end-to-end, you'll know your hardware/driver setup works, and you can decide whether to attempt the full 20-scenario `dataset.json` (which will take noticeably longer and push your GPU harder) or report results on the 8-scenario subset with that scoping explicitly stated in your paper's experimental setup section — this is an honest, defensible choice given your hardware, not a shortcut to hide.
-
-**If CARLA still crashes or is unusably slow even at Low quality:** your GPU is the bottleneck for the simulation step specifically — the Generator and Verifier API calls don't need a GPU at all. A practical fallback is running CARLA on a free Google Colab GPU runtime, or a few hours of a rented cloud GPU (RunPod, Lambda, Vast.ai), for the simulation/capture step only, while everything else (dataset, agents, metrics, writing) stays on your laptop.
-
----
-
-## Reproducing the paper's experiments
-
-This is a four-step pipeline; run them in order. Add `--backend huggingface` to any command to run that step under the Hugging Face backend instead of the default.
-
-### Step 1 — Baseline (free-form code generation, no schema, no loop)
-
-```bash
-python -m eval.run_baseline --dataset scenarios/dataset.json --out outputs/baseline
-```
-
-**What this does:** for each of the 20 scenarios, asks the backend to write raw CARLA Python directly (the way most people would first try this), executes it in a subprocess against your running CARLA server, and records whether it ran without crashing. The baseline's prompt engineering (spawn safety, actor limits, color handling) is adapted from an earlier hand-tuned prototype rather than written as a deliberately weak strawman — a free-form baseline that nobody would actually use in practice would be a less defensible comparator than one reflecting genuine prior effort to make open-loop generation work well.
-
-**Expect:** this step is the fastest (no simulation loop, just code-gen + execution attempt) but has the lowest success rate — this is intentional; it's the naive comparator. Typical run time: 3–8 minutes for 20 scenarios.
-
-### Step 2 — Generator-only condition (schema-constrained, no reflection)
-
-```bash
-python -m eval.run_full_evaluation \
-  --dataset scenarios/dataset.json \
-  --mode generator_only \
-  --out outputs/generator_only
-```
-
-**Expect:** noticeably higher executable success than the baseline (the JSON schema alone removes most code-level hallucination), but semantic alignment scores will show clear room for improvement on harder scenarios — this is the gap the Reflector exists to close. Run time: roughly 15–25 minutes total.
-
-### Step 3 — Full closed-loop Prompt-to-Drive
-
-```bash
-python -m eval.run_full_evaluation \
-  --dataset scenarios/dataset.json \
-  --mode full \
-  --out outputs/full \
-  --max-iterations 3
-```
-
-**Expect:** this is the slowest step since failing scenarios re-run up to 3 times. Most scenarios converge within 1–2 iterations. Run time: typically 30–60 minutes for 20 scenarios.
-
-### Step 4 — Compute metrics and generate figures
-
-```bash
-python -m eval.compute_metrics \
-  --baseline outputs/baseline/baseline_results.json \
-  --generator-only outputs/generator_only \
-  --full outputs/full \
-  --dataset scenarios/dataset.json \
-  --out eval/results
-```
-
-**Output files (all in `eval/results/`):**
-
-| File | Contents |
-|---|---|
-| `table1_success_rate.csv` | Executable success rate, 3 conditions |
-| `table2_semantic_alignment.csv` | Semantic alignment score (formal predicate agreement — see below), overall + broken down by difficulty/weather/event |
-| `table3_reflection_recovery.csv` | First-pass pass rate, after-reflection pass rate, and recovery rate (fraction of first-pass failures the Reflector subsequently fixes) — the metric that directly evidences the Reflector does something |
-| `table4_seed_variance.csv` | Per-core-scenario mean ± std and an overall 95% CI across seeded executions — only populated if `--full` points at results from the expanded/seeded dataset (see Optional Step 4b below) |
-| `figure3_reflection_convergence.pdf` | Score-by-iteration line chart for initially-failing scenarios — the paper's key figure |
-| `figure4_difficulty_breakdown.pdf` | Bar chart comparing generator-only vs. full system across difficulty tiers |
-| `summary.json` | All computed numbers in one machine-readable file |
-
-**On the semantic alignment metric:** this is `predicate_agreement` — the fraction of applicable, named, boolean predicates (`weather_correct`, `pedestrian_present`, `vehicles_present`, `event_observable`) that held under majority vote across `P2D_VERIFIER_N_SAMPLES` (default 3) independent VLM calls per verification, not a single opaque holistic score from one VLM call. See [docs/SEMANTIC_VERIFICATION_METRIC.md](docs/SEMANTIC_VERIFICATION_METRIC.md) for the full formal definition and worked example.
-
-### Optional Step 4b — Expand the benchmark for statistical power
-
-The 20 handcrafted scenarios alone support only a single point estimate per scenario. To report mean ± std / a confidence interval rather than a bare 20-sample point estimate, expand each core scenario into multiple seeded executions:
-
-```bash
-python -m eval.expand_dataset \
-  --input scenarios/dataset.json \
-  --output scenarios/dataset_expanded.json \
-  --seeds-per-scenario 3
-```
-
-This produces 60 total executions (20 core scenarios × 3 seeds), where each seed varies the engine's NPC/pedestrian spawn-point shuffle (and, for non-deterministic backends, the Generator's sampling draw) while keeping the same prompt and ground-truth labels. **This is 20 scenario concepts executed 3 times each, not 60 independently authored scenarios — state this distinction explicitly in your paper's Experimental Setup section.** Re-run Steps 1–4 with `--dataset scenarios/dataset_expanded.json` to populate Table 4.
-
-### Optional Step 5 — Side-by-side backend comparison
-
-If you want the cross-backend robustness result discussed above:
-
-```bash
-python -m eval.run_backend_comparison \
-  --dataset scenarios/dataset.json \
-  --out outputs/backend_comparison \
-  --max-iterations 3
-```
-
-This runs the full closed-loop pipeline once under OpenAI and once under Hugging Face on the identical 20-scenario set and prints a side-by-side table:
-
-```
-======================================================================
-Backend        Success%    Sem. Align.   Pass%     Mean Iter
-----------------------------------------------------------------------
-openai         92.0        0.847         85.0      1.65
-huggingface    84.0        0.781         75.0      2.10
-======================================================================
-```
-
-(Numbers above are illustrative placeholders — your actual run will populate `outputs/backend_comparison/backend_comparison_summary.json` with real results.) Run only one backend with `--backends huggingface` if you'd rather not spend OpenAI credits.
-
----
-
-## Interactive UI
-
-### Web UI (recommended)
-
-```bash
-pip install -r requirements-ui.txt
-python -m webui.server --mode live --backend local --hardware-profile low_vram_2gb
-# open http://127.0.0.1:8080
-```
-
-Type a scenario, press **Generate**, and watch each agent report in turn: **Agent 1 Generator** shows the `ScenarioSpec` it produced, the **CARLA Engine** streams the frames it captures, **Agent 2 Verifier** shows each predicate, the predicate agreement and the hybrid score against the threshold, and **Agent 3 Reflector** shows the exact correction it sends back for the next iteration. Every live run is saved under `outputs/ui/` and can be replayed without CARLA (`--mode replay`), which is how the public demo works. Full guide: [docs/WEB_UI.md](docs/WEB_UI.md).
-
-### Desktop (pygame) UI
-
-```bash
-python -m ui.app --backend huggingface --hardware-profile low_vram_2gb
-```
-
-A single-window pygame app: type a scenario prompt, press Enter, and watch it move through the four pipeline stages in real time — a status panel shows **Generator → Engine → Verifier → Reflector** with a live indicator per stage (pending / active / done / failed), the live CARLA camera feed streams into the window as the scenario executes, and once verification completes you see the **semantic alignment score as a percentage with a pass/fail checkmark**, plus the specific missing elements if it failed and which iteration the Reflector is now correcting.
-
-All the same flags as `run_scenario.py` apply (`--backend`, `--hardware-profile`, `--carla-host`, `--carla-port`, `--max-iterations`). This is a genuinely useful demo for a paper Q&A or a GitHub README GIF, separate from the eval pipeline used to produce the paper's actual results tables.
-
----
-
-## Extending the framework
-
-- **Add a new backend:** implement `TextBackend` and/or `VisionBackend` from `backends/llm_backend.py` and register it in `get_backend()`. The Generator, Verifier, orchestrator, and all eval scripts work unchanged against any conforming backend.
-- **Add new event types or weather presets:** extend the `Literal` types in `engine/scenario_spec.py` and add a matching entry to `WEATHER_PRESETS` in `engine/carla_runner.py`, plus a correction rule in `reflector/agent.py`'s `ELEMENT_CORRECTIONS` table.
-- **Add new scenarios to the evaluation set:** append entries to `scenarios/dataset.json` following the existing schema — `id`, `prompt`, `difficulty`, `expected_weather`, `expected_actors`, `expected_event`.
-- **Tune the hybrid verification weights:** `SCORE_WEIGHTS` in `verifier/agent.py` (defaults: VLM 0.5 / log 0.3 / execution 0.2).
-- **Change the pass threshold:** `P2D_VERIFICATION_THRESHOLD` in `.env`, or pass `threshold=` to `Verifier(...)`.
-
----
-
-## Known limitations
-
-- The Verifier's accuracy is bounded by the underlying VLM's ability to interpret synthetic, rendered scenes — performance on photorealistic real-world imagery may differ, and open-weight VLMs may lag GPT-4o on this specific task (this is exactly what `run_backend_comparison.py` measures).
-- The `ScenarioSpec` schema intentionally trades expressiveness for safety: scenarios outside the enumerated `event_type` / `weather` / `town` values cannot be represented without extending the schema.
-- The Reflector cannot resolve scenarios that are fundamentally inexpressible within the current schema; these are marked `iteration_limit_reached` and excluded from semantic-alignment metrics but retained in executable-success metrics.
-- Open-weight models accessed via the Hugging Face Inference API are more prone to wrapping JSON output in prose than OpenAI's structured outputs; `backends/llm_backend.py` includes a repair parser for this, but parse failures are still possible and are logged + scored as a verification failure rather than silently retried.
-- All Generator and Verifier calls are cached locally (`shelve`, keyed by backend name + content hash) to avoid redundant spend/inference on repeated runs.
-
----
-
-## Citing this work
+## Citation
 
 ```bibtex
-@inproceedings{promptodrive2026,
-  title     = {Prompt-to-Drive: Closed-Loop Semantic Verification for Trustworthy AI-Synthesized Autonomous Driving Scenarios},
-  booktitle = {Proceedings of the ESWEEK Workshop on Challenges in AI-Based Embedded Systems Applications (CAIESA)},
-  series    = {IFIP Advances in Information and Communication Technology},
-  publisher = {Springer},
+@inproceedings{ambigapathy2026prompttodrive,
+  title     = {Prompt-to-Drive: Closed-Loop AI-Driven Scenario Synthesis and Verifier-Sensitive
+               Semantic Alignment for Autonomous Driving Simulation},
+  author    = {Ambigapathy, Narmada and Idrees, Fatima and Abah, John and Alhalabi, Ali and Rettberg, Achim},
+  booktitle = {CAIESA Workshop at Embedded Systems Week (ESWEEK)},
   year      = {2026}
 }
 ```
 
----
+## Acknowledgment
+
+Supported by the EdgeAI-Trust project, funded by the Chips Joint Undertaking (Chips JU) under Grant Agreement No. 101139892, with support from the European Union's Horizon Europe programme and participating National Authorities.
 
 ## License
 
-MIT — see [LICENSE](LICENSE). Contributions welcome via pull request.
+[MIT](LICENSE). Contributions are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md).

@@ -112,12 +112,3 @@ The hook is observational: it is called outside every latency timer, and any
 exception it raises is swallowed. `tests/test_webui.py` checks that
 `pipeline_run.json` is identical with and without it, so evaluation numbers
 are unaffected. Without the callbacks, `run()` behaves exactly as before.
-
-## Where the old test_UI prototype went
-
-| test_UI file | Now |
-|---|---|
-| `main.py` (pygame client) | replaced by `webui/static/*`: multi-line prompt, Clear, Enter/Shift+Enter, reconnect with backoff carried over |
-| `backend/simulator.py` (socket frame server) | replaced by in-process `engine/carla_runner.py`; its JPEG frame encoding lives on in `webui/frames.py` |
-| `backend/llm_interface.py` (free-form CARLA code) | not used by the UI; this approach is the paper's free-form baseline (`generate_baseline_code`, `eval/run_baseline.py`) |
-| `start_carla_sim.py` (launcher) | replaced by `python -m webui.server`; its CARLA port check became the header's reachability badge |

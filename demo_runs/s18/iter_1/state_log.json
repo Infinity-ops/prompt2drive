@@ -1,0 +1,107 @@
+{
+  "scenario_id": "s18_iter1",
+  "spec": {
+    "weather": "fog",
+    "town": "Town04",
+    "num_vehicles": 20,
+    "pedestrian": false,
+    "event_type": "emergency_brake",
+    "duration_s": 15,
+    "spawn_point_index": 10,
+    "cyclist": false,
+    "notes": "Town04 dual carriageway with dense fog for multi-vehicle pile-up scenario."
+  },
+  "hardware_profile": "low_vram_2gb",
+  "weather_api_called": "fog",
+  "pedestrian_spawned": false,
+  "vehicle_count": 20,
+  "actors": [
+    {
+      "type": "ego_vehicle",
+      "id": 468
+    },
+    {
+      "type": "npc_vehicle",
+      "id": 470
+    },
+    {
+      "type": "npc_vehicle",
+      "id": 471
+    },
+    {
+      "type": "npc_vehicle",
+      "id": 472
+    },
+    {
+      "type": "npc_vehicle",
+      "id": 473
+    },
+    {
+      "type": "npc_vehicle",
+      "id": 474
+    },
+    {
+      "type": "npc_vehicle",
+      "id": 475
+    },
+    {
+      "type": "npc_vehicle",
+      "id": 476
+    },
+    {
+      "type": "npc_vehicle",
+      "id": 477
+    },
+    {
+      "type": "npc_vehicle",
+      "id": 478
+    },
+    {
+      "type": "npc_vehicle",
+      "id": 479
+    },
+    {
+      "type": "npc_vehicle",
+      "id": 480
+    },
+    {
+      "type": "npc_vehicle",
+      "id": 481
+    },
+    {
+      "type": "npc_vehicle",
+      "id": 482
+    },
+    {
+      "type": "npc_vehicle",
+      "id": 483
+    },
+    {
+      "type": "npc_vehicle",
+      "id": 484
+    },
+    {
+      "type": "npc_vehicle",
+      "id": 485
+    },
+    {
+      "type": "npc_vehicle",
+      "id": 486
+    },
+    {
+      "type": "npc_vehicle",
+      "id": 487
+    },
+    {
+      "type": "npc_vehicle",
+      "id": 488
+    },
+    {
+      "type": "npc_vehicle",
+      "id": 489
+    }
+  ],
+  "execution_completed": true,
+  "errors": [],
+  "map_loaded": "Town04"
+}

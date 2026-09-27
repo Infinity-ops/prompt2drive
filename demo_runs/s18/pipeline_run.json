@@ -1,0 +1,73 @@
+{
+  "scenario_id": "s18",
+  "prompt": "Dense fog causes a multi-vehicle pile-up scenario on a dual carriageway as vehicles brake suddenly.",
+  "mode": "full",
+  "iterations": [
+    {
+      "iteration": 0,
+      "spec": {
+        "weather": "fog",
+        "town": "Town04",
+        "num_vehicles": 15,
+        "pedestrian": false,
+        "event_type": "emergency_brake",
+        "duration_s": 20,
+        "spawn_point_index": 10,
+        "cyclist": false,
+        "notes": "Town04 dual carriageway suitable for multi-vehicle emergency braking in fog."
+      },
+      "refinement_context": null,
+      "execution_success": true,
+      "verification_score": 0.6667,
+      "verification_passed": false,
+      "missing_elements": [
+        "vehicles_present",
+        "event_observable"
+      ],
+      "latencies": {
+        "generator_s": 0.0,
+        "engine_s": 3.6764,
+        "verifier_s": 2.0328,
+        "reflector_s": 1.8179,
+        "total_pipeline_s": 5.7098
+      },
+      "peak_memory_mb": 507.94
+    },
+    {
+      "iteration": 1,
+      "spec": {
+        "weather": "fog",
+        "town": "Town04",
+        "num_vehicles": 20,
+        "pedestrian": false,
+        "event_type": "emergency_brake",
+        "duration_s": 15,
+        "spawn_point_index": 10,
+        "cyclist": false,
+        "notes": "Town04 dual carriageway with dense fog for multi-vehicle pile-up scenario."
+      },
+      "refinement_context": "[LLM REFLECTION -- iteration 1]\nPrevious score: 0.67\nTo address the simulation execution failure, increase the number of vehicles to ensure sufficient density for a multi-vehicle pile-up scenario. Ensure that the 'vehicles_present' element is correctly configured to include a variety of vehicle types on the dual carriageway. Additionally, verify that the 'event_observable' element is properly implemented so that the emergency brake event is clearly visible and can be observed by the simulation. This may involve adjusting the visibility settings or camera angles to ensure the event is captured accurately. Ensure that all changes align with the scenario's intent of depicting a dense fog condition leading to sudden braking and a subsequent pile-up.\n\nApply all adjustments above. Preserve fields not implicated in errors.",
+      "execution_success": true,
+      "verification_score": 0.8333,
+      "verification_passed": true,
+      "missing_elements": [
+        "event_observable"
+      ],
+      "latencies": {
+        "generator_s": 1.0883,
+        "engine_s": 2.8144,
+        "verifier_s": 2.1301,
+        "reflector_s": 0.0,
+        "total_pipeline_s": 6.0334
+      },
+      "peak_memory_mb": 508.06
+    }
+  ],
+  "final_status": "passed",
+  "total_wall_time_s": 13.6,
+  "total_generator_s": 1.0883,
+  "total_engine_s": 6.4908,
+  "total_verifier_s": 4.1629,
+  "total_reflector_s": 1.8179,
+  "peak_memory_mb": 508.06
+}

@@ -1,0 +1,35 @@
+{
+  "scenario_id": "s04_iter0",
+  "spec": {
+    "weather": "night",
+    "town": "Town01",
+    "num_vehicles": 2,
+    "pedestrian": true,
+    "event_type": "emergency_brake",
+    "duration_s": 15,
+    "spawn_point_index": 5,
+    "cyclist": false,
+    "notes": "Town01 for pedestrian scenario at night with emergency brake."
+  },
+  "hardware_profile": "low_vram_2gb",
+  "weather_api_called": "night",
+  "pedestrian_spawned": true,
+  "vehicle_count": 2,
+  "actors": [
+    {
+      "type": "ego_vehicle",
+      "id": 203
+    },
+    {
+      "type": "npc_vehicle",
+      "id": 205
+    },
+    {
+      "type": "npc_vehicle",
+      "id": 206
+    }
+  ],
+  "execution_completed": true,
+  "errors": [],
+  "map_loaded": "Town01"
+}

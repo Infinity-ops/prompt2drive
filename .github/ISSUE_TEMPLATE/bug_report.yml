@@ -1,0 +1,32 @@
+name: Bug report
+description: Something in the pipeline, the Engine or the web UI does not work
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: The command you ran and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Full traceback or console output. For a scenario, attach outputs/<scenario_id>/pipeline_run.json if you can.
+      render: text
+  - type: input
+    id: carla
+    attributes:
+      label: CARLA version (server and pip client)
+      placeholder: "0.9.16 / 0.9.16"
+  - type: input
+    id: backend
+    attributes:
+      label: Backends and models
+      placeholder: "text=openai (gpt-4o), vision=local vLLM (Qwen2.5-VL-7B-AWQ)"
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU and driver
+      placeholder: "RTX 3090 24 GB, driver 550"

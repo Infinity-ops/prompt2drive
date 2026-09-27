@@ -1,0 +1,41 @@
+{
+  "scenario_id": "s04",
+  "prompt": "The ego vehicle performs an emergency brake at night when a pedestrian steps off the curb.",
+  "mode": "full",
+  "iterations": [
+    {
+      "iteration": 0,
+      "spec": {
+        "weather": "night",
+        "town": "Town01",
+        "num_vehicles": 2,
+        "pedestrian": true,
+        "event_type": "emergency_brake",
+        "duration_s": 15,
+        "spawn_point_index": 5,
+        "cyclist": false,
+        "notes": "Town01 for pedestrian scenario at night with emergency brake."
+      },
+      "refinement_context": null,
+      "execution_success": true,
+      "verification_score": 1.0,
+      "verification_passed": true,
+      "missing_elements": [],
+      "latencies": {
+        "generator_s": 0.0,
+        "engine_s": 3.0426,
+        "verifier_s": 1.9899,
+        "reflector_s": 0.0,
+        "total_pipeline_s": 5.0328
+      },
+      "peak_memory_mb": 470.89
+    }
+  ],
+  "final_status": "passed",
+  "total_wall_time_s": 5.03,
+  "total_generator_s": 0.0,
+  "total_engine_s": 3.0426,
+  "total_verifier_s": 1.9899,
+  "total_reflector_s": 0.0,
+  "peak_memory_mb": 470.89
+}

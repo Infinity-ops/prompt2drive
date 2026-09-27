@@ -1,12 +1,8 @@
 # Semantic Verification Metric — Formal Definition
 
-This document is the canonical definition of the "semantic alignment" metric
-used throughout Prompt-to-Drive's evaluation, intended to be adapted directly
-into the paper's Methods / System Model section. It exists because an earlier
-version of this metric was a single, unexplained float reported by a
-vision-language model ("how well does this match, 0 to 1?"), and a reviewer
-correctly identified that as inadequate evidence for a trustworthiness claim.
-This document describes what replaced it.
+This document defines the semantic-alignment score exactly as implemented in
+`verifier/agent.py`. Every score in `pipeline_run.json` (`verification_score`)
+and every table produced by `eval/compute_metrics.py` uses this definition.
 
 ## 1. Predicates
 
@@ -104,15 +100,12 @@ where:
   w_vlm = 0.5, w_log = 0.3, w_exec = 0.2   (see verifier/agent.py SCORE_WEIGHTS)
 ```
 
-A scenario **passes verification** if `S_final >= threshold` (default 0.72,
+A scenario **passes verification** if `S_final >= threshold` (default 0.75,
 configurable via `P2D_VERIFICATION_THRESHOLD`).
 
-**Reporting note for the paper:** report `predicate_agreement` as the primary
-semantic alignment metric in all tables, since it is the explainable,
-auditable component; report `S_final` only where the pass/fail decision
-itself is the subject (e.g. Table 1's success-rate definition), and be
-explicit in the Methods section that `S_final` additionally incorporates
-deterministic execution/log evidence, not just the VLM channel.
+Both components are stored per iteration: `predicate_agreement` (the
+explainable, VLM-only part) and `S_final` (which also includes the state-log
+and execution evidence, and decides pass/fail).
 
 ## 6. Reflection Recovery Rate
 

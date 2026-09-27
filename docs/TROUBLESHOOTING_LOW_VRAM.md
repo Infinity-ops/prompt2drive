@@ -93,28 +93,15 @@ What this profile changes (`engine/hardware_profiles.py`):
    to crash immediately on launch rather than climbing first).
 3. **Try an older CARLA version.** CARLA 0.9.13 has measurably lower baseline
    VRAM requirements than 0.9.14+. If you have flexibility on CARLA version,
-   downgrading is a legitimate option for this hardware — note the version
-   in your paper's reproducibility section either way, since CARLA version is
-   a relevant experimental detail regardless of which you use.
+   downgrading is a legitimate option for this hardware. Record the version
+   you used either way; it is a relevant experimental detail.
 4. **Close every other GPU-using application** (browser hardware acceleration,
    other Electron apps, a second monitor doing GPU compositing) before
    launching CARLA — on a 2GB card, a browser alone can consume 200-400MB,
    which is a meaningful fraction of your budget.
 
-## What this means for your paper
+## Reporting
 
-If you end up running your full evaluation under these reduced settings
-(lower resolution, fewer NPCs, only Town01/Town02, 10Hz physics), **report
-this explicitly in your Experimental Setup section** — it is a legitimate,
-disclosed constraint, not something to hide. Something like:
-
-> "Experiments were conducted on a Dell Precision 3530 mobile workstation
-> (Intel Core i7-8850H, NVIDIA Quadro M620, 2GB VRAM) using CARLA's
-> OpenGL renderer at reduced quality settings (Low quality level, 480×270
-> camera resolution, maximum 6 concurrent NPC vehicles, 10Hz simulation
-> tick rate) due to VRAM constraints on the available hardware."
-
-This is honest, specific, and — importantly for a CPS/embedded-systems
-audience — actually relevant context, since resource constraints are
-exactly what CAIESA reviewers care about. A modest-hardware evaluation,
-clearly disclosed, is not a weakness to hide; an undisclosed one would be.
+If you publish results produced under reduced settings (lower resolution, fewer
+NPCs, Town01/Town02 only, 10 Hz physics), state the hardware profile, CARLA
+version and launch flags alongside the numbers.

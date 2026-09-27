@@ -1,0 +1,39 @@
+{
+  "scenario_id": "s01_iter0",
+  "spec": {
+    "weather": "rain",
+    "town": "Town01",
+    "num_vehicles": 3,
+    "pedestrian": true,
+    "event_type": "crossing",
+    "duration_s": 15,
+    "spawn_point_index": 6,
+    "cyclist": false,
+    "notes": "Town01 pedestrian-friendly area, rain, crossing."
+  },
+  "hardware_profile": "low_vram_2gb",
+  "weather_api_called": "rain",
+  "pedestrian_spawned": true,
+  "vehicle_count": 3,
+  "actors": [
+    {
+      "type": "ego_vehicle",
+      "id": 197
+    },
+    {
+      "type": "npc_vehicle",
+      "id": 199
+    },
+    {
+      "type": "npc_vehicle",
+      "id": 200
+    },
+    {
+      "type": "npc_vehicle",
+      "id": 201
+    }
+  ],
+  "execution_completed": true,
+  "errors": [],
+  "map_loaded": "Town01"
+}

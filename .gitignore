@@ -1,15 +1,28 @@
+# Secrets
 .env
-.cache/
+.env.*
+!.env.example
+
+# Python
 __pycache__/
-*.pyc
-.pytest_cache/
-outputs/*/
-!outputs/.gitkeep
-eval/results/*
-!eval/results/.gitkeep
+*.py[cod]
 *.egg-info/
-.DS_Store
+.pytest_cache/
 .venv/
 venv/
 .esweek_env/
+
+# Run artefacts (large; publish selected runs via demo_runs/ instead)
+outputs/
+!outputs/.gitkeep
+.cache/
+eval/results/*
+!eval/results/.gitkeep
 crash_trace.log
+*.log
+!eval/results_*/run.log
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/

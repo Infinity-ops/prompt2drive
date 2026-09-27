@@ -1,0 +1,38 @@
+cff-version: 1.2.0
+message: "If you use Prompt-to-Drive, please cite the paper below."
+title: "Prompt-to-Drive"
+type: software
+license: MIT
+authors:
+  - family-names: Ambigapathy
+    given-names: Narmada
+    affiliation: Hochschule Hamm-Lippstadt
+  - family-names: Idrees
+    given-names: Fatima
+    affiliation: Hochschule Hamm-Lippstadt
+  - family-names: Abah
+    given-names: John
+    affiliation: Hochschule Hamm-Lippstadt
+  - family-names: Alhalabi
+    given-names: Ali
+    affiliation: Hochschule Hamm-Lippstadt
+  - family-names: Rettberg
+    given-names: Achim
+    affiliation: Hochschule Hamm-Lippstadt
+preferred-citation:
+  type: conference-paper
+  title: "Prompt-to-Drive: Closed-Loop AI-Driven Scenario Synthesis and Verifier-Sensitive Semantic Alignment for Autonomous Driving Simulation"
+  authors:
+    - family-names: Ambigapathy
+      given-names: Narmada
+    - family-names: Idrees
+      given-names: Fatima
+    - family-names: Abah
+      given-names: John
+    - family-names: Alhalabi
+      given-names: Ali
+    - family-names: Rettberg
+      given-names: Achim
+  conference:
+    name: "CAIESA Workshop at Embedded Systems Week (ESWEEK)"
+  year: 2026

@@ -8,7 +8,10 @@ import json
 import argparse
 import logging
 import gc
-import torch
+try:  # only used to flush the CUDA cache between scenarios
+    import torch
+except ImportError:  # pragma: no cover
+    torch = None
 from pathlib import Path
 from collections import defaultdict
 from orchestrator.pipeline import PromptToDrivePipeline
@@ -86,7 +89,7 @@ def main():
                 prompt=sc["prompt"], scenario_id=sc["id"], spec=task["spec"], mode=args.mode
             )
             gc.collect()
-            if torch.cuda.is_available():
+            if torch is not None and torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
     logger.info("All batched evaluation runs completed. Outputs synced to %s", args.out)

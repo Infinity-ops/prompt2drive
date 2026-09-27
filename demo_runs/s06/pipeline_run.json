@@ -1,0 +1,41 @@
+{
+  "scenario_id": "s06",
+  "prompt": "Two pedestrians suddenly cross near a traffic signal in heavy rain at a signalized junction.",
+  "mode": "full",
+  "iterations": [
+    {
+      "iteration": 0,
+      "spec": {
+        "weather": "rain",
+        "town": "Town03",
+        "num_vehicles": 5,
+        "pedestrian": true,
+        "event_type": "crossing",
+        "duration_s": 15,
+        "spawn_point_index": 8,
+        "cyclist": false,
+        "notes": "Town03 signalized junction, heavy rain, pedestrian crossing."
+      },
+      "refinement_context": null,
+      "execution_success": true,
+      "verification_score": 1.0,
+      "verification_passed": true,
+      "missing_elements": [],
+      "latencies": {
+        "generator_s": 0.0,
+        "engine_s": 2.702,
+        "verifier_s": 1.9706,
+        "reflector_s": 0.0,
+        "total_pipeline_s": 4.673
+      },
+      "peak_memory_mb": 531.65
+    }
+  ],
+  "final_status": "passed",
+  "total_wall_time_s": 4.67,
+  "total_generator_s": 0.0,
+  "total_engine_s": 2.702,
+  "total_verifier_s": 1.9706,
+  "total_reflector_s": 0.0,
+  "peak_memory_mb": 531.65
+}
