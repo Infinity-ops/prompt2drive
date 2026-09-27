@@ -165,9 +165,6 @@ Stated plainly so nobody has to discover them:
 }
 ```
 
-## Acknowledgment
-
-Supported by the EdgeAI-Trust project, funded by the Chips Joint Undertaking (Chips JU) under Grant Agreement No. 101139892, with support from the European Union's Horizon Europe programme and participating National Authorities.
 
 ## License
 
