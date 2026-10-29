@@ -4,7 +4,7 @@
 
 **Type a driving scenario in plain English. Three AI agents build it in CARLA, check it, and fix it.**
 
-[![tests](https://github.com/Infinity-ops/prompt2drive/actions/workflows/tests.yml/badge.svg)](https://github.com/OWNER/prompt2drive/actions/workflows/tests.yml)
+[![tests](https://github.com/Infinity-ops/prompt2drive/actions/workflows/tests.yml/badge.svg)](https://github.com/Infinity-ops/prompt2drive/actions/workflows/tests.yml)
 ![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11-3776AB?logo=python&logoColor=white)
 ![CARLA](https://img.shields.io/badge/CARLA-0.9.16-1b2530)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -35,7 +35,7 @@ Most LLM-to-simulator pipelines stop at *"the scenario ran"*. Prompt-to-Drive al
 ### Option A: watch recorded runs (no CARLA, no GPU, 2 minutes)
 
 ```bash
-git clone https://github.com/OWNER/prompt2drive.git && cd prompt2drive
+git clone https://github.com/Infinity-ops/prompt2drive.git && cd prompt2drive
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements-ui.txt
 python -m webui.server --mode replay --runs-dir demo_runs
